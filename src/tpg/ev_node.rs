@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
 
 use crate::database::api::Database;
+use crate::database::simpledb::{self, SimpleDB};
 use crate::ds::events::Event;
 use crate::external::ffi;
 use crate::tpg::txn_node::TxnStatus;
@@ -39,6 +40,9 @@ pub struct EvNode{
 	pub reads: Vec<String>,
 	pub write: String,
 	pub has_write: bool,
+
+	// For debugging.
+	has_storage_slot: bool,
 
 	// Router to execute function.
 	idx: i32,
@@ -91,7 +95,10 @@ impl EvNode {
             is_read_from_fulfilled,
             reads: event.reads.clone(),
             write: event.write.clone(),
+
             idx,
+            has_write: event.has_write,
+            has_storage_slot: false,
         }
 	}
 
@@ -102,7 +109,7 @@ impl EvNode {
 	}
 
 	// Wrapper. Calling execution handler.
-	pub fn execute(&self, values: Vec<String>, cnt: i32) -> (bool, Vec<u8>) {
+	pub fn execute(&self, values: Vec<String>, cnt: i32) -> (bool, String) {
 		let value = values
 			.join(";");
 		ffi::execute_event(
@@ -128,19 +135,22 @@ impl EvNode {
 
 	}
 
-	pub fn write_back<T: Database>(&self, value: &Vec<u8>, db: &Arc<T>) {
-		// // Stage result. TODO.
-		// ctx.db.stage_version(
-		// 	"default", 
-		// 	evn_option.body.write.as_str(), 
-		// 	evn_option.txn.body.ts, 
-		// 	str::from_utf8(&write_back).unwrap(), 
-		// 	&evn_option
-		// );
-	}
-
-	pub fn write_abortion_back<T: Database>(db: &T){
-		// TODO
+	pub fn write_back<T: Database>(&self, value: &String, db: Arc<T>) {
+		if self.has_storage_slot {
+			db.write_version(
+				"default", 
+				self.write.as_str(), 
+				self.txn.upgrade().unwrap().ts, 
+				value,
+			);
+		} else {
+			db.push_version(
+				"default", 
+				self.write.as_str(), 
+				self.txn.upgrade().unwrap().ts, 
+				value,
+			);
+		}
 	}
 
 	// Add a new evNode reading this node's result.
@@ -244,7 +254,10 @@ impl EvNode {
 						// State shift has been made. Recover the state shift and dive in.
 						node.status.store(EventStatus::WAITING);
 						debug_assert!(node.is_read_from_fulfilled[idx].swap(false)); // Orginally must be true. Set false now.
-						TODO_database_reset_state();
+						unsafe{
+							simpledb::DB.unwrap()
+								.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
+						}
 						stack.push(node); // It could produce wrong result to be used by sons.
 					}
 					EventStatus::CLAIMED => {
@@ -262,7 +275,12 @@ impl EvNode {
 				}
 			}
 		};
-		TODO_copy_last_state_result(); // Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
+		if self.has_write{
+			unsafe {
+				simpledb::DB.unwrap()
+					.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); // Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
+			}
+		}
 	}
 
 	// Notification from parents in read_from.

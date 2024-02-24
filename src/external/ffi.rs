@@ -23,7 +23,7 @@ unsafe extern "C++" {
     include!("DB4NFV/include/ffi.h"); // Include the path to your C++ header file
 	pub fn Init_SFC(argc: i32, argv: Vec<String>) -> String;
 	pub fn VNFThread(c: i32, v: Vec<String>);
-	pub fn execute_sa_udf(txnReqId_jni: i64, saIdx: i32, value: Vec<u8>, param_count: i32) -> Vec<u8>;
+	pub fn execute_sa_udf(txnReqId_jni: i64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
 	pub fn txn_finished(txnReqId_jni: i64) -> i32;
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
     unsafe { ffi::VNFThread(c, v) };
 }
 
-pub(crate) fn execute_event(txn_req_id: i64, sa_idx: i32, value: String, param_count: i32) -> (bool, Vec<u8>) {
+pub(crate) fn execute_event(txn_req_id: i64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
 	// TODO. Parse out res. Double return value.
 	unsafe { (true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.bytes().collect(), param_count)) }
 }

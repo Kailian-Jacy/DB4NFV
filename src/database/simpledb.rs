@@ -1,10 +1,10 @@
-use std::cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::config::CONFIG;
 use crate::database::api;
-use crate::tpg::tpg;
 use crate::ds::ringbuf::{self, RingBuf};
+
+pub(crate) static mut DB: Option<Arc<SimpleDB>> = None;
 
 // Multi-version states engine
 pub struct SimpleDB {
@@ -16,78 +16,34 @@ impl api::Database for SimpleDB {
 		SimpleDB { tables: HashMap::new() }
 	}
 
-	fn add_table(&self, to_add_table: &str, keys: Vec<&str>) {
+	fn add_table(&mut self, to_add_table: &str, keys: Vec<&str>) {
 		self.tables.insert(String::from(to_add_table), Table::empty_init(keys));
 	}
 
-	/* Stage management.
-		Commit_version commits the certain version of certain variables and discard records. Called when txn Commit.
-		Stage_version adds temporary records for certain variables. Called when operation executes.
-		Revert_to_version discards the later records of some variables.  Called when ABORTION happens.
-	*/ 
-	fn commit_version(&self, table: &str, key: &str, t: u64) {
-		debug_assert!(self.tables.contains_key(table));
-		self.tables
-			.get_mut(table)
-			.unwrap()
-			.commit_version(key, t);
-	}
-	fn stage_version(&self, table: &str, key: &str, t: u64, value: &str, modifier: &Arc<tpg::EvNode>) {
-		debug_assert!(self.tables.contains_key(table));
-		self.tables
-			.get_mut(table)
-			.unwrap()
-			.stage_version(key, t, value, modifier);
-	}
-	fn revert_to_version(&self, table: &str, key: &str, t:u64) {
-		debug_assert!(self.tables.contains_key(table));
-		self.tables
-			.get_mut(table)
-			.unwrap()
-			.revert_to_version(key, t);
-	}
+	fn reset_version(&self, table: &str, key: &str, ts: u64) {
+		self.tables[table].reset_version(key, ts);	
+    }
 
-	/* State fetch.
-		Get fetches any version of the variable. Marked by time stamp. Panic if not exists.
-		Latest fetches the latest state and its time stamp.
-		Solid fetches the commited state of some variable and its time stamp.
-	*/
-	// fn get(&self, table: &str, key: &str, t:u64) -> Option<&str> {
-	// 	debug_assert!(self.tables.contains_key(table), "Table not found.");
-	// 	self.tables[table].records[*self.tables[table].states.get(key)?]
-	// 		.object_as_ordered(|dp| dp.ts.cmp(&t))
-	// 		.map(|dp| dp.value.as_str())
-	// }
-	fn latest(&self, table: &str, key: &str) -> Option<api::StateWithTS> {
-		debug_assert!(self.tables.contains_key(table), "Table not found.");
-		let tbl = &self.tables[table];
-		let rec = &tbl.records[tbl.states[key]];
-		let dp = rec.peek(rec.len() - 1)?.clone();
-		Some(api::StateWithTS{
-			value: dp.value.as_str(),
-			ts: dp.ts,	
-		})
-	}
-	fn solid(&self, table: &str, key: &str) -> Option<api::StateWithTS> {
-		debug_assert!(self.tables.contains_key(table), "Table not found.");
-		let tbl = self.tables[table];
-		let rec = tbl.records[tbl.states[key]];
-		let dp = rec.peek(0)?;
-		Some(api::StateWithTS{
-			value: dp.value.as_str(),
-			ts: dp.ts,	
-		})
-	}
-	// fn dependency_list(&self, table: &str, read_state: Vec<&str>) -> Vec<Arc<tpg::EvNode>>{
-	// 	debug_assert!(self.tables.contains_key(table), "Table not found.");
-	// 	let tbl = self.tables[table];
-	// 	read_state.iter().map(|& k| {
-	// 		tbl.records[tbl.states[k]]
-	// 			.peek(tbl.records[tbl.states[k]].len() - 1)
-	// 			.unwrap()
-	// 			.modifier.clone().unwrap()
-	// 	}).collect()
-	// }
+	fn write_version(&self, table: &str, key: &str, ts: u64, value: &String) {
+		self.tables[table].write_version(key, ts, value);	
+    }
+
+	fn push_version(&self, table: &str, key: &str, ts: u64, value: &String) {
+		self.tables[table].push_version(key, ts, value);	
+    }
+
+	fn copy_last_version(&self, table: &str, key: &str, ts: u64) {
+		self.tables[table].copy_last_version(key, ts);	
+    }
+
+	fn release_version(&self, table: &str, key: &str, ts: u64) {
+		self.tables[table].release_version(key, ts);	
+    }
+
+	fn get_version(&self, table: &str, key: &str, ts: u64) -> String {
+		self.tables[table].get_version(key, ts)
+    }
+
 }
 
 struct Table {
@@ -100,7 +56,16 @@ struct Table {
 struct DataPoint<T: Default> {
 	ts: u64,
 	value: T,
-	// modifier: Option<Arc<tpg::EvNode>>,
+	state: DataPointState,
+}
+
+// Debug state. Could just remove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataPointState {
+	DEFAULT,
+	NORMAL,
+	ABORTED,
+	SHOULDBEEMPTY,
 }
 
 impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {
@@ -108,34 +73,17 @@ impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {
 		Self {
 			ts: 0,
 			value: Default::default(),
-			// modifier: None,
+			state: DataPointState::DEFAULT,
 		}
 	}
 }
-
-// impl<T: Default> PartialEq for DataPoint<T> {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.ts == other.ts
-//     }
-// }
-// impl<T: Default> Eq for DataPoint<T> {}
-// impl<T: Default> PartialOrd for DataPoint<T> {
-//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-//         Some(self.cmp(other))
-//     }
-// }
-// impl<T: Default> Ord for DataPoint<T> {
-//     fn cmp(&self, other: &Self) -> Ordering {
-//         self.ts.cmp(&other.ts)
-//     }
-// }
 
 impl Table {
 	fn empty_init(keys: Vec<&str>) -> Self {
 		let mut states = HashMap::new();
 		let mut records = Vec::<ringbuf::RingBuf<DataPoint<String>>>::new();
 		keys.iter().enumerate().for_each(|(idx, &k)| {
-		    states[&String::from(k)] = idx;
+		    states.insert(String::from(k), idx);
 			records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
 		});
 		Table{
@@ -143,21 +91,40 @@ impl Table {
 			records: records,
 		}
 	}
-	fn commit_version(&mut self, key: &str, t: u64) {
-        // Assert that the key exists in the records HashMap
-        debug_assert!(self.states.contains_key(key), "Key not found in records.");
-        let index = self.records[self.states[key]]
-			.position_as_ordered(Box::new(|dp: &DataPoint<String>| {dp.ts.cmp(&t)}))
-			.unwrap_or_else(|| panic!("No DataPoint with timestamp {} found for key {}", t, key));
-        self.records[self.states[key]].discard_before(index);
-    }
+	fn reset_version(&self, key: &str, ts: u64){
+	// This only called on obj with normal states.
+		debug_assert!(self.states.contains_key(key));
+		let obj = self.records[self.states[key]]
+			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+		// This only called on obj to be aborted. Should have been written NORMAL result.
+		debug_assert!({
+			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
+		});
+		obj.unwrap().state = DataPointState::SHOULDBEEMPTY;
+	}
+
+	fn copy_last_version(&self, key: &str, ts: u64){
+	// This only called on obj to be aborted. Should have been written NORMAL result.
+		debug_assert!(self.states.contains_key(key));
+		let obj = self.records[self.states[key]]
+			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+		debug_assert!({
+			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
+		});
+		obj.unwrap().state = DataPointState::ABORTED;
+	}
+
 	// Stage version inserts the version at the end. The t is guaranteed to be the last version.
-	fn stage_version(&mut self, key: &str, t: u64, value: &str, modifier: &Arc<tpg::EvNode> ) {
+	fn push_version(&self, key: &str, ts: u64, value: &str) {
 		// Insert dataPoint into vectors. Keep correct order.
 		debug_assert!(self.states.contains_key(key));
-		// Check if the last one.
 		debug_assert!({
-			let pos = self.records[self.states[key]].position_as_ordered(Box::new(|dp| dp.ts.cmp(&t)));
+			let obj = self.records[self.states[key]]
+				.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			obj.is_none() || obj.unwrap().state != DataPointState::ABORTED
+		});
+		debug_assert!({
+			let pos = self.records[self.states[key]].position_as_ordered(Box::new(|dp| dp.ts.cmp(&ts)));
 			match pos{
 				Some(i) => i == self.records[self.states[key]].len()-1,
 				None => false,
@@ -165,21 +132,49 @@ impl Table {
 		});
 		// Create a new DataPoint with the provided timestamp and value.
 		let new_data_point = DataPoint {
-			ts: t,
+			ts: ts,
 			value: value.to_string(),
-			// modifier: Some(modifier.clone()),
+			state: DataPointState::NORMAL,
 		};
 		self.records[self.states[key]].push(new_data_point);
 	}
-	fn revert_to_version(&mut self, key: &str, t:u64) {
-		 // Assert that the key exists in the records HashMap
-        assert!(self.states.contains_key(key), "Key not found in records.");
-        // Find the index of the DataPoint with the provided timestamp
-        let index = self.records[self.states[key]]
-			.position_as_ordered(Box::new(|dp| dp.ts.cmp(&t)))
-			.unwrap_or_else(|| panic!("No DataPoint with timestamp {} found for key {}", t, key));
-        // Conserve the vector until the index
-        self.records[self.states[key]].truncate_from(index + 1);
+
+	// Stage version inserts the version at in the middle. We find it first.
+	fn write_version(&self, key: &str, ts: u64, value: &str) {
+		// Insert dataPoint into vectors. Keep correct order.
+		debug_assert!(self.states.contains_key(key));
+		let obj_ref = self.records[self.states[key]]
+			.ref_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+		debug_assert!({
+			obj_ref.unwrap().1
+				.read().unwrap()
+				.state == DataPointState::SHOULDBEEMPTY
+		});
+		// Create a new DataPoint with the provided timestamp and value.
+		let new_data_point = DataPoint {
+			ts: ts,
+			value: value.to_string(),
+			state: DataPointState::NORMAL,
+		};
+		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
+		obj_ref.unwrap().1.write().unwrap().value = String::from(value);
+	}
+
+	fn release_version(&self, key: &str, ts: u64){
+		// Remove datapoint from ringbuf.
+		debug_assert!(self.states.contains_key(key));
+		debug_assert!(self.records[self.states[key]].peek(0).unwrap().ts == ts); // Should be the very first of the key.
+		self.records[self.states[key]].discard_before(1);
+	}
+
+	fn get_version(&self, key: &str, ts: u64) -> String{
+		// Get datapoint from ringbuf.
+		debug_assert!(self.states.contains_key(key));
+		let obj = self.records[self.states[key]]
+			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)))
+			.unwrap(); // Shoud not be none.
+		debug_assert!(obj.state == DataPointState::NORMAL);
+		obj.value.clone()
 	}
 }
 

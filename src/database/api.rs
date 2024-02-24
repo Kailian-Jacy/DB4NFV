@@ -1,41 +1,15 @@
-use std::sync::Arc;
-use crate::tpg::tpg;
-
-// Trait database defines multi-version database interface.
-/*
-	A multi-version database.
- */
 pub trait Database {
+	// Init.
 	fn new() -> Self;
+	fn add_table(&mut self, to_add_table: &str, keys: Vec<&str>);
 
-	// Initialization with table names.
-	fn add_table(&self, to_add_table: &str, keys: Vec<&str>);
+	// Writing.
+	fn reset_version(&self, table: &str, key: &str, ts: u64); // Debug api. Could just remove.
+	fn write_version(&self, table: &str, key: &str, ts: u64, value: &String); // At certain version.
+	fn push_version(&self, table: &str, key: &str, ts: u64, value: &String); // Be sure to insert at certain result.
+	fn copy_last_version(&self, table: &str, key: &str, ts: u64);
+	fn release_version(&self, table: &str, key: &str, ts: u64);
 
-	/* Stage management.
-		Stage_version adds temporary records for certain variables. Called when operation(event) executes.
-		Commit_version commits the certain version of certain variables and discard records. Called when txn Commit.
-		Revert_to_version discards the later records of some variables.  Called when ABORTION happens.
-	*/ 
-	fn stage_version(&self, table: &str, key: &str, t: u64, value: &str, modifier: &Arc<tpg::EvNode>);
-	fn commit_version(&self, table: &str, key: &str, t: u64);
-	fn revert_to_version(&self, table: &str, key: &str, t:u64);
-
-	/* State fetch.
-		// Get fetches any version of the variable. Marked by time stamp. Panic if not exists.
-		Latest fetches the latest state and its time stamp.
-		Solid fetches the commited state of some variable and its time stamp.
-	*/
-	// fn get(&self, table: &str, key: &str, t:u64) -> Option<&str>;
-	fn latest(&self, table: &str, key: &str) -> Option<StateWithTS>;
-	fn solid(&self, table: &str, key: &str) -> Option<StateWithTS>;
-
-	/* Dependency provider.
-		Dependency_list 
-	 */
-	// fn dependency_list(&self, table: &str, read_state: Vec<&str>) -> Vec<Arc<tpg::EvNode>>;
-}
-
-pub struct StateWithTS<'a> {
-	pub value: &'a str,
-	pub ts: u64,
+	// Reading.
+	fn get_version(&self, table: &str, key: &str, ts: u64) -> String;
 }

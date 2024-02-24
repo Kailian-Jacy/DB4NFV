@@ -14,7 +14,7 @@ mod tpg;
 
 use database::{
     api::Database, 
-    simpledb::SimpleDB
+    simpledb::{self, SimpleDB}
 };
 use external::ffi;
 use tpg::tpg::Tpg;
@@ -40,7 +40,8 @@ fn main() {
     utils::bind_to_cpu_core(0);
     ffi::init_sfc(0, Vec::new());
 
-    let db = Arc::new(SimpleDB::new());
+    unsafe {simpledb::DB = Some(Arc::new(SimpleDB::new()))};
+    let db = unsafe {simpledb::DB.as_ref().unwrap().clone()};
     /*
         TODO: Initialize db tables as well as tpg hash maps.
     */

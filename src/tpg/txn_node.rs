@@ -2,6 +2,8 @@ use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
 
+use crate::database::api::Database;
+use crate::database::simpledb;
 use crate::ds::events::Event;
 use crate::ds::transactions::TXN_TEMPLATES;
 use crate::external::ffi::TxnMessage;
@@ -50,7 +52,7 @@ impl Drop for TxnNode {
 						&& self.cover.iter().all(|(k, v)| v.is_none())
 					);
 		self.ev_nodes.iter().for_each(|en| {
-			TODO_database_release_version(en.write, self.ts);
+			unsafe { simpledb::DB.unwrap().release_version("default",&en.write, self.ts) };
 		});
 	}	
 }

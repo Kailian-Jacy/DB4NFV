@@ -88,7 +88,7 @@ impl<T: RingBufContent> RingBuf<T> {
 	    }
 	}
 	// Copy to take a look at the last.
-	pub fn peek(&self, idx: usize) -> Option<T> {
+	pub fn peek(&self, idx: usize) -> Option<&T> {
 	    if self.end() - self.start() - 1 < idx {
 			None
 	    } else {
@@ -102,7 +102,7 @@ impl<T: RingBufContent> RingBuf<T> {
 		self.end.swap((&self.start() + index) % &self.cap);
 	}
 	// Truncate from the head.
-	pub fn discard_before(&mut self, index: usize) {
+	pub fn discard_before(&self, index: usize) {
 		debug_assert!(index >= 0);
 		debug_assert!(index < self.len() as usize);
 		self.start.swap((self.start() + index) % self.cap);
@@ -114,14 +114,19 @@ impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
 	pub fn position_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<usize> 
 	{
-		Some(self.find_as_ordered(f)?.0)
+		Some(self.ref_as_ordered(f)?.0)
 	}
 	#[inline]
 	pub fn object_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
 	{
-		Some(self.find_as_ordered(f)?.1)
+		Some(*self.ref_as_ordered(f)?.1.read().unwrap())
 	}
-	pub fn find_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, T)> {
+	#[inline]
+	pub fn find_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
+	{
+		Some(*self.ref_as_ordered(f)?.1.read().unwrap())
+	}
+	pub fn ref_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
 		if self.start() <= self.end() {
             self.binary_search(0, self.end() - self.start(),  &f)
         } else {
@@ -135,7 +140,7 @@ impl<T: RingBufContent> RingBuf<T> {
             }
         }
 	}
-	fn binary_search(&self, start_idx: usize, len: usize, f: &Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, T)> {
+	fn binary_search(&self, start_idx: usize, len: usize, f: &Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
         let mut left = 0;
         let mut right = len - 1;
 
@@ -145,7 +150,7 @@ impl<T: RingBufContent> RingBuf<T> {
             let cmp = f(&self.buf[idx].read().unwrap());
 
             match cmp {
-                Ordering::Equal => return Some((idx, *self.buf[idx].read().unwrap())),
+                Ordering::Equal => return Some((idx, &self.buf[idx])),
                 Ordering::Greater => right = mid - 1,
                 Ordering::Less => left = mid + 1,
             }
