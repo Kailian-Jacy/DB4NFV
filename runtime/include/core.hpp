@@ -36,6 +36,7 @@
 #include <string>
 #include <bitset>
 #include <boost/pool/simple_segregated_storage.hpp>
+#include <queue>
 #include <boost/foreach.hpp>
 #include <boost/algorithm/string.hpp> 
 #include <vector>
@@ -49,7 +50,7 @@
 #include <jsoncpp/json/json.h>
 #include "ffi.h"
 
-#include "datastore/dspackethandler.hpp"
+// #include "datastore/dspackethandler.hpp"
 #include "json.hpp"
 
 #define LIBVNF_STACK_KERNEL 1

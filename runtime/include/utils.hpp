@@ -121,8 +121,6 @@ struct Globals {
     DSCallbackFn onAcceptByServerDSCallback;
     ReqObjExtractorFn onAcceptByServerReqObjIdExtractor;
     PacketBoundaryDisambiguatorFn onAcceptByServerPBD;
-    JavaVM * __jvm;
-    JNIEnv* __env;
     std::mutex boost_malloc_mutex;
 
     // DB4NFV globals.
@@ -168,9 +166,6 @@ struct Globals {
         return doNotEvictCachedDSValueKeyMap.find(value) == doNotEvictCachedDSValueKeyMap.end();
     }
 };
-
-// Get JVM and jenv related. FIXME. Optimize.
-bool GetJniEnv(JNIEnv **env);
 
 Globals& GetGlobal();
 
