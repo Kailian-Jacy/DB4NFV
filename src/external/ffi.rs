@@ -23,8 +23,8 @@ unsafe extern "C++" {
     include!("DB4NFV/include/ffi.h"); // Include the path to your C++ header file
 	pub fn Init_SFC(argc: i32, argv: Vec<String>) -> String;
 	pub fn VNFThread(c: i32, v: Vec<String>);
-	pub fn execute_sa_udf(txnReqId_jni: i64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
-	pub fn txn_finished(txnReqId_jni: i64) -> i32;
+	pub fn execute_sa_udf(txnReqId_jni: u64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
+	pub fn txn_finished(txnReqId_jni: u64) -> i32;
 }
 
 // #[derive(Deserialize)]
@@ -45,14 +45,10 @@ unsafe extern "C++" {
 
 }
 
-use crossbeam::atomic::AtomicCell;
+use std::mem;
+
 use serde::Deserialize;
-use crate::{
-	ds::{
-		self, transactions::{Txn, TXN_TEMPLATES},
-	}, 
-	tpg::txn_node::{TxnNode, TxnStatus},
-};
+use crate::ds::transactions::{Txn, TXN_TEMPLATES};
  
 #[derive(Deserialize)]
 pub struct TxnMessage {
@@ -63,7 +59,7 @@ pub struct TxnMessage {
 
 fn deposit_transaction(a: String){
 	let msg: TxnMessage = serde_json::from_str(a.as_str()).unwrap();
-	if !msg.type_idx as usize >= TXN_TEMPLATES.len() {
+	if !msg.type_idx as usize >= TXN_TEMPLATES.get().unwrap().len() {
 		// Err(String::from("required index invalid."))
 		panic!("required index invalid.");
 	};
@@ -81,10 +77,12 @@ pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	let mut txns: Vec<Txn> = Txn::from_string(&json_string)
 		.expect("Error parsing transmitted txn template");
 
-	txns.iter_mut().map(|mut txn|{
+	let all_txn_templates = txns.iter_mut().map(|txn|{
         txn.process_txn();
-		TXN_TEMPLATES.push(mem::take(txn));
-    });
+		mem::take(txn)
+    }).collect();
+
+	let _ = TXN_TEMPLATES.set(all_txn_templates);
 
 	// Parse all variables from the SFC.
 	/*
@@ -95,10 +93,10 @@ pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 }
 
 pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
-	let mut ret: Vec<_>;
-	TXN_TEMPLATES.iter().for_each(|txn|{
-		let mut all_reads: Vec<String> = txn.es.iter()
-            .flat_map(|en| en.reads.iter().cloned())
+	let mut ret: Vec<&'static str> = Vec::new();
+	TXN_TEMPLATES.get().unwrap().iter().for_each(|txn|{
+		let mut all_reads: Vec<&String> = txn.es.iter()
+            .flat_map(|en| en.reads.iter())
             .collect();
 
         // Sort and deduplicate reads
@@ -114,12 +112,12 @@ pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
     unsafe { ffi::VNFThread(c, v) };
 }
 
-pub(crate) fn execute_event(txn_req_id: i64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
+pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
 	// TODO. Parse out res. Double return value.
 	unsafe { (true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.bytes().collect(), param_count)) }
 }
 
-pub(crate) fn txn_finished_sign(txn_req_id: i64) -> i32 {
+pub(crate) fn txn_finished_sign(txn_req_id: u64) -> i32 {
 	unsafe { ffi::txn_finished(txn_req_id) }
 }
 

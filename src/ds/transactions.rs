@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ds::events as ev;
+use once_cell::sync::OnceCell;
 use serde::Deserialize;
 
 #[derive(Deserialize, Default)]
@@ -14,7 +15,7 @@ pub struct Txn{
 	pub all_reads_length: usize,
 }
 
-pub static TXN_TEMPLATES: Vec<Txn> = Vec::<Txn>::new();
+pub static TXN_TEMPLATES: OnceCell::<Vec<Txn>> = OnceCell::new();
 
 impl Txn {
 	// Deserialization function to parse the string into a vector of Txn

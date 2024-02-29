@@ -7,7 +7,7 @@ use crate::database::api::Database;
 use crate::database::simpledb;
 use crate::ds::events::Event;
 use crate::ds::transactions::TXN_TEMPLATES;
-use crate::external::ffi::TxnMessage;
+use crate::external::ffi::{self, TxnMessage};
 use crate::tpg::ev_node::{EvNode, EventStatus};
 use crate::utils::ShouldSyncCell;
 
@@ -64,7 +64,7 @@ impl TxnNode{
 		Construct TxnNode from message and template.
 	 */
 	pub fn from_message(msg: TxnMessage) -> Arc<Self> {
-		let tpl = &TXN_TEMPLATES[msg.type_idx as usize];
+		let tpl = &TXN_TEMPLATES.get().unwrap()[msg.type_idx as usize];
 		// TODO. Allocate from manager.
 		let ta = Arc::new(TxnNode{
 				read_from: Vec::with_capacity(tpl.all_reads_length),  // Of the same size.h
@@ -115,7 +115,7 @@ impl TxnNode{
 			let last_modify_hashmap = tb.read().unwrap();
 			// Anyway, update.
 			en.reads.iter().enumerate().for_each(|(idx, r)|{
-				let mut last_option = last_modify_hashmap.get(r.as_str());
+				let last_option = last_modify_hashmap.get(r.as_str());
 				if last_option.is_some() {
 					// 	Find parent. Do have last.
 					let last = last_option.unwrap().as_ref().unwrap();
@@ -220,7 +220,7 @@ impl TxnNode{
 		}
 
 		// Release unused reference to release parentsRemove the linking to decrease reference count in either condition.
-		self.read_from.iter().map(|parent| {
+		self.read_from.iter().for_each(|parent| {
 			debug_assert!({
 				parent.read().is_none() 
 				 || parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
@@ -228,7 +228,7 @@ impl TxnNode{
 			let mut wp = parent.write();
 			*wp = None;
 		});
-		self.cover.iter().map(|(_, w_parent)|{
+		self.cover.iter().for_each(|(_, w_parent)|{
 			debug_assert!({
 				w_parent.read().is_none() 
 				 || w_parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
@@ -242,7 +242,8 @@ impl TxnNode{
 			&& self.cover.iter().all(|(_, r)| r.read().is_none()) 
 		});
 
-		// TODO. Possibly call PostTransactionUDF in the future.
+		// Inform the runtime that the txn has been processed.
+		ffi::txn_finished_sign(self.txn_req_id);
 
 		true
 	}

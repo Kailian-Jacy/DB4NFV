@@ -118,7 +118,7 @@ impl EvNode {
 		let value = values
 			.join(";");
 		ffi::execute_event(
-			self.txn.upgrade().unwrap().txn_req_id as i64, 
+			self.txn.upgrade().unwrap().txn_req_id, 
 			self.idx, 
 			value, 
 			cnt
