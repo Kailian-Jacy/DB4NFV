@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::{mpsc::*, Arc, Mutex, RwLock, Weak};
 use std::sync::mpsc::Receiver;
 use std::collections::HashMap;
@@ -8,6 +9,7 @@ use crate::database::simpledb::{self, SimpleDB};
 use crate::ds::events::Event;
 use crate::external::ffi;
 use crate::tpg::txn_node::TxnStatus;
+use crate::utils::ShouldSyncCell;
 
 use super::txn_node::TxnNode;
 
@@ -20,7 +22,7 @@ pub struct EvNode{
 		- Could be None, when father txn useless and collected.
 		- Corresponding to the is_read_from_fulfilled vector.
 	 */
-	pub read_from: Vec<Option<Weak<EvNode>>>,       
+	pub read_from: Vec<ShouldSyncCell<Option<Weak<EvNode>>>>,       
 	/*
 		read_by is the set of evNode who use the result of this EvNode. Comes from:
 		1. Tpg construction. 
@@ -82,7 +84,10 @@ impl EvNode {
 		let reads_length = event.reads.len();
         
         // Pre-allocate read_from and is_read_from_fulfilled vectors
-        let read_from = vec![None; reads_length];
+        let mut read_from = Vec::with_capacity(reads_length);
+		for i in 0..reads_length {
+		    read_from.push(ShouldSyncCell::new(None));
+		}
         let is_read_from_fulfilled = std::iter::repeat_with(|| AtomicCell::new(false))
             .take(reads_length)
             .collect();
@@ -109,7 +114,7 @@ impl EvNode {
 	}
 
 	// Wrapper. Calling execution handler.
-	pub fn execute(&self, values: Vec<String>, cnt: i32) -> (bool, String) {
+	pub fn execute(&self, values: &Vec<String>, cnt: i32) -> (bool, String) {
 		let value = values
 			.join(";");
 		ffi::execute_event(
@@ -135,7 +140,7 @@ impl EvNode {
 
 	}
 
-	pub fn write_back<T: Database>(&self, value: &String, db: Arc<T>) {
+	pub fn write_back<T: Database>(&self, value: &String, db: &T) {
 		if self.has_storage_slot {
 			db.write_version(
 				"default", 
@@ -161,7 +166,7 @@ impl EvNode {
 		if !self.txn.upgrade().unwrap().read_by
 			.read().unwrap()
 			.iter().any(
-				|to| to.is_some_and(
+				|to| to.as_ref().is_some_and(
 					|ref tn| Arc::ptr_eq(&tn.upgrade().unwrap(), &son.txn.upgrade().unwrap())
 			)) // Check if already inside.
 		{
@@ -173,27 +178,34 @@ impl EvNode {
 
 	pub fn get_next_option_push_others_ready(&self, pipe: &Sender<Arc<EvNode>>) -> Option<Arc<EvNode>> {
 		// Traverse sons to inform acceptance, and return the next node.
-		let next_candidates: Vec<_> = self.read_by.read().unwrap().iter().enumerate().filter(|(idx, &node)| 
+		let next_candidates: Vec<Arc<EvNode>> = (*self.read_by.read().unwrap())
+			.iter().enumerate().filter(|(idx, node)| 
 			{
-				node.unwrap().upgrade().unwrap().parent_accepted(*idx); // Inform parent ready.
-				node.unwrap().upgrade().unwrap().ready()  // Test who is ready. Will ignore those are under construction.
-			}
-		).collect();
+				// Test who is ready. Will ignore those are under construction.
+				node.as_ref().is_some_and(|n| {
+					n.upgrade().unwrap().parent_accepted(*idx); // Inform parent ready.
+					n.upgrade().unwrap().ready()
+				})
+			})
+			.map(|(_, node)| 
+				{
+					node.as_ref().unwrap().upgrade().unwrap()
+				}
+			).collect();
 		// Compare TS and select the minimum as the next.
-		let min_evnode = *next_candidates
+		let min_evnode = next_candidates
 			.iter()
-			.min_by_key(|&& evnode| evnode.1.unwrap()
-				.upgrade().unwrap().txn
-				.upgrade().unwrap().ts
-			).unwrap().1;
+			.min_by_key(|&evnode| 
+				evnode.txn.upgrade().unwrap().ts
+			);
 		// Assign the next. Push others to queue.
-		if min_evnode.is_some() {
+		if min_evnode.is_some(){
 			for evnode in &next_candidates {
-				if !std::ptr::eq(evnode.1.as_ref().unwrap(), min_evnode.as_ref().unwrap()) {
-					pipe.send((*evnode.1).unwrap().upgrade().unwrap()).unwrap();
+				if !std::ptr::eq(evnode, *min_evnode.as_ref().unwrap()) {
+					pipe.send(evnode.clone()).unwrap();
 				}
 			}
-			Some(min_evnode.unwrap().upgrade().unwrap())
+			Some(min_evnode.unwrap().clone())
 		} else {
 			None
 		}
@@ -244,20 +256,20 @@ impl EvNode {
 		);
 		self.status.store(EventStatus::ABORTED);
 		// TODO. Preallocate the vector.
-		let mut stack = vec![Arc::new(*self)];
+		let mut stack: Vec<Arc<EvNode>> = Vec::with_capacity(20);
+		// Shit... I just want a Arc<EvNode> of self...
+		stack.push(self.txn.upgrade().unwrap().ev_nodes.read()[self.idx as usize].clone());
 		while stack.len() != 0 {
 			let parent = stack.pop().unwrap();
 			for (idx, son) in parent.read_by.read().unwrap().iter().enumerate(){
-				let node = son.unwrap().upgrade().unwrap(); // Son could not be none.
+				let node = son.as_ref().unwrap().upgrade().unwrap(); // Son could not be none.
 				match node.status.load() {
 					EventStatus::ACCEPTED => {
 						// State shift has been made. Recover the state shift and dive in.
 						node.status.store(EventStatus::WAITING);
 						debug_assert!(node.is_read_from_fulfilled[idx].swap(false)); // Orginally must be true. Set false now.
-						unsafe{
-							simpledb::DB.unwrap()
-								.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
-						}
+						simpledb::DB.get().unwrap()
+							.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
 						stack.push(node); // It could produce wrong result to be used by sons.
 					}
 					EventStatus::CLAIMED => {
@@ -276,10 +288,8 @@ impl EvNode {
 			}
 		};
 		if self.has_write{
-			unsafe {
-				simpledb::DB.unwrap()
-					.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); // Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
-			}
+			simpledb::DB.get().unwrap()
+				.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); // Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
 		}
 	}
 

@@ -16,14 +16,12 @@ use database::{
     api::Database, 
     simpledb::{self, SimpleDB}
 };
-use external::ffi;
+use external::ffi::{self, all_variables};
 use tpg::tpg::Tpg;
 use worker::{
     worker_threads::execute_thread,
     construct_thread::construct_thread,
-    context::Context,
 };
-use crate::external::pipe;
 
 fn main() {
     // Parse command line arguments
@@ -40,8 +38,11 @@ fn main() {
     utils::bind_to_cpu_core(0);
     ffi::init_sfc(0, Vec::new());
 
-    unsafe {simpledb::DB = Some(Arc::new(SimpleDB::new()))};
-    let db = unsafe {simpledb::DB.as_ref().unwrap().clone()};
+    // Initiate Database.
+    let mut db = SimpleDB::new();
+    db.add_table("default", all_variables());
+    simpledb::DB.set(db);  
+    
     /*
         TODO: Initialize db tables as well as tpg hash maps.
     */
@@ -61,24 +62,15 @@ fn main() {
      */
     let worker_thread_ends = config::CONFIG.read().unwrap().worker_threads_num
         + config::CONFIG.read().unwrap().vnf_threads_num + 1;
-    let worker_thread_contexts = (config::CONFIG.read().unwrap().vnf_threads_num + 1..worker_thread_ends).map(
-        |tid| Context::new(tid as i16, tpg.clone(), db.clone(), None)
-    );
-    let guards = worker_thread_contexts.map(|ctx| {
+    let guards = (config::CONFIG.read().unwrap().vnf_threads_num + 1..worker_thread_ends).map(|tid| {
         thread::spawn(move || {
-            utils::bind_to_cpu_core(ctx.tid as usize);
-           execute_thread(ctx)
+            utils::bind_to_cpu_core(tid as usize);
+            execute_thread(tid as usize)
         })
     });
 
     // Main thread work as construct thread.
-    let construct_thread_context = Context::new(
-        -1, 
-        tpg.clone(), 
-        db.clone(), 
-        Some(pipe::init())
-    );
-    construct_thread(construct_thread_context);
+    construct_thread(-1);
 
     for guard in vnf_guards {
         guard.join().unwrap();

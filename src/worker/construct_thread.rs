@@ -1,5 +1,6 @@
-use crate::database::api::Database;
-use crate::external::ffi;
+use crate::external::{ffi, pipe};
+use crate::external::pipe::PIPE_IN;
+use crate::tpg::tpg::TPG;
 use crate::tpg::{
 	txn_node::*,
 	ev_node::*,
@@ -9,24 +10,26 @@ use std::sync::mpsc::TryRecvError;
 
 use crate::config::CONFIG;
 
-use super::context;
-
 // This worker thread constructs TPG streamingly.
 // TODO. Slab memory allocation to reduce the allocation time.
-pub fn construct_thread(ctx: context::Context){
+pub fn construct_thread(tid: i16){
 	// TODO. Add support for multi-table later.
 	let table_name = "default";
+
+	// TODO. Sort.
 	let timeout_margin = CONFIG.read().unwrap().transaction_out_of_order_time_ns;
 	let mut timeout_waiting_queue = Vec::<TxnNode>::new();
 
+	let txn_msg_queue = pipe::init();
+
 	// TODO. Graceful shutdown.
 	loop { // Outer loop. For each valid transaction.
-		let mut tn;
+		let tn;
 		// Message receiver.
 		loop { // Inner loop. Take out txn from queue and order it. Take out latest transacation each time.
-			let mut new_txn_msg: ffi::TxnMessage;
-			match ctx.txn_msg_pipe.unwrap().try_recv() {
-				Ok(new_txn) => {},
+			let new_txn_msg: ffi::TxnMessage;
+			match txn_msg_queue.try_recv() {
+				Ok(res) => {new_txn_msg = res},
 				Err(err) => match err {
 					TryRecvError::Empty => {
 						// Continue if the receiver is empty
@@ -57,13 +60,13 @@ pub fn construct_thread(ctx: context::Context){
 		}
 		// Set link between events nodes to later ones.
 		// Set link between this txn and its parents.
-		tn.set_links(&ctx.tpg.state_last_modify);
+		tn.set_links(&TPG.get().unwrap().state_last_modify);
 
 		// if ready, into ready_queue. Else will be visited by ancestors.
-		tn.ev_nodes.iter().for_each(|ev_node| {
+		tn.ev_nodes.read().iter().for_each(|ev_node| {
 			if ev_node.ready() {
 				ev_node.status.store(EventStatus::INQUEUE);
-			    ctx.tpg.ready_queue_in.send(ev_node.clone()).unwrap();
+			    TPG.get().unwrap().ready_queue_in.send(ev_node.clone()).unwrap();
 			} else {
 				ev_node.status.store(EventStatus::WAITING);
 			}

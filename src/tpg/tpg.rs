@@ -2,12 +2,14 @@ use std::sync::{mpsc::*, Arc, Mutex, RwLock, Weak};
 use std::sync::mpsc::Receiver;
 use std::collections::HashMap;
 
-use crate::database::api::Database;
+use once_cell::sync::OnceCell;
 
 use super::{
 	txn_node::TxnNode,
 	ev_node::EvNode,
 };
+
+pub(crate) static TPG: OnceCell<Tpg> = OnceCell::new();
 
 // Tpg itself. applies to both Txn and Events.
 pub struct Tpg{

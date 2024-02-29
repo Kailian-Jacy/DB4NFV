@@ -79,7 +79,7 @@ impl<T: RingBufContent> RingBuf<T> {
 	    if self.start() + 1 == self.end() {
 			None
 	    } else {
-			let r = Some(*self.buf[self.end() - 1 as usize].read().unwrap());
+			let r = Some(self.buf[self.end() - 1 as usize].read().unwrap().clone());
 			if self.end() == 0 {
 				self.end.swap(self.cap);
 			} 
@@ -88,11 +88,11 @@ impl<T: RingBufContent> RingBuf<T> {
 	    }
 	}
 	// Copy to take a look at the last.
-	pub fn peek(&self, idx: usize) -> Option<&T> {
+	pub fn peek(&self, idx: usize) -> Option<T> {
 	    if self.end() - self.start() - 1 < idx {
 			None
 	    } else {
-			Some(*self.buf[self.start() + idx].read().unwrap())
+			Some(self.buf[self.start() + idx].read().unwrap().clone())
 	    }
 	}
 	// Truncate from the tail.
@@ -119,12 +119,12 @@ impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
 	pub fn object_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
 	{
-		Some(*self.ref_as_ordered(f)?.1.read().unwrap())
+		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
 	}
 	#[inline]
 	pub fn find_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
 	{
-		Some(*self.ref_as_ordered(f)?.1.read().unwrap())
+		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
 	}
 	pub fn ref_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
 		if self.start() <= self.end() {

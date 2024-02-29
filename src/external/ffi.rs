@@ -53,7 +53,6 @@ use crate::{
 	}, 
 	tpg::txn_node::{TxnNode, TxnStatus},
 };
-use std::{collections::HashMap, error::Error, mem, sync::{Arc, RwLock}};
  
 #[derive(Deserialize)]
 pub struct TxnMessage {
@@ -68,7 +67,7 @@ fn deposit_transaction(a: String){
 		// Err(String::from("required index invalid."))
 		panic!("required index invalid.");
 	};
-	match super::pipe::PIPE_IN.get_mut().unwrap().send(msg){
+	match super::pipe::PIPE_IN.get().unwrap().send(msg){
 		Ok(_) => (),
 		Err(e) => println!("Error sending message to pipe: {}", e),
 	}
@@ -76,7 +75,7 @@ fn deposit_transaction(a: String){
 
 pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	// Call the unsafe extern function and receive the resulting JSON string
-    let json_string = unsafe { ffi::Init_SFC(argc, argv) };
+    let json_string = ffi::Init_SFC(argc, argv);
 
     // Parse the JSON string into template.
 	let mut txns: Vec<Txn> = Txn::from_string(&json_string)

@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use crate::tpg::tpg;
-use crate::utils::*;
 use crate::ds::events as ev;
 use serde::Deserialize;
 
@@ -31,9 +29,9 @@ impl Txn {
         let mut all_writes = HashMap::new();
 
         // Iterate through each event in the transaction
-        self.es.iter().enumerate().map(|(idx,event)| {
+        self.es.iter_mut().enumerate().map(|(idx,event)| {
 			// To make close if cancel write dependency.
-			event.reads.push(event.write);
+			event.reads.push(event.write.clone());
 			event.reads.sort();
 			event.reads.dedup();
 			event.sa_idx = idx;
@@ -41,9 +39,9 @@ impl Txn {
             // Add reads to all_reads
             all_reads.extend(event.reads.iter().cloned());
             // Record write field in all_writes
-            all_writes.insert(event.write.clone(), event.clone());
+            all_writes.insert(event.write.clone(), ());
             // Check for duplicate writes
-            if let Some(existing_event) = all_writes.get(&event.write) {
+            if all_writes.get(&event.write).is_some() {
                 panic!("Duplicate writes detected for key: {}", event.write);
             }
 		});

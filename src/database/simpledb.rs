@@ -1,10 +1,12 @@
+use once_cell::sync::OnceCell;
 use std::collections::HashMap;
+use std::iter::Once;
 use std::sync::Arc;
 use crate::config::CONFIG;
 use crate::database::api;
 use crate::ds::ringbuf::{self, RingBuf};
 
-pub(crate) static mut DB: Option<Arc<SimpleDB>> = None;
+pub(crate) static DB: OnceCell<SimpleDB> = OnceCell::new();
 
 // Multi-version states engine
 pub struct SimpleDB {
@@ -95,7 +97,7 @@ impl Table {
 	// This only called on obj with normal states.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
 		// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!({
 			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
@@ -107,7 +109,7 @@ impl Table {
 	// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
 		debug_assert!({
 			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
 		});
@@ -120,11 +122,11 @@ impl Table {
 		debug_assert!(self.states.contains_key(key));
 		debug_assert!({
 			let obj = self.records[self.states[key]]
-				.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+				.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
 			obj.is_none() || obj.unwrap().state != DataPointState::ABORTED
 		});
 		debug_assert!({
-			let pos = self.records[self.states[key]].position_as_ordered(Box::new(|dp| dp.ts.cmp(&ts)));
+			let pos = self.records[self.states[key]].position_as_ordered(Box::new(move |dp| dp.ts.cmp(&ts)));
 			match pos{
 				Some(i) => i == self.records[self.states[key]].len()-1,
 				None => false,
@@ -144,7 +146,7 @@ impl Table {
 		// Insert dataPoint into vectors. Keep correct order.
 		debug_assert!(self.states.contains_key(key));
 		let obj_ref = self.records[self.states[key]]
-			.ref_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.ref_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
 		debug_assert!({
 			obj_ref.unwrap().1
 				.read().unwrap()
@@ -171,7 +173,7 @@ impl Table {
 		// Get datapoint from ringbuf.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(|dp: &DataPoint<String>| dp.ts.cmp(&ts)))
+			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)))
 			.unwrap(); // Shoud not be none.
 		debug_assert!(obj.state == DataPointState::NORMAL);
 		obj.value.clone()

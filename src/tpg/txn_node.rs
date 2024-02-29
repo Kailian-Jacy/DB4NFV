@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
@@ -8,6 +9,7 @@ use crate::ds::events::Event;
 use crate::ds::transactions::TXN_TEMPLATES;
 use crate::external::ffi::TxnMessage;
 use crate::tpg::ev_node::{EvNode, EventStatus};
+use crate::utils::ShouldSyncCell;
 
 // Node linked to Construct TPG.
 pub struct TxnNode{
@@ -17,14 +19,14 @@ pub struct TxnNode{
 		- Size fixed after building. Comes from joined keys. Template should all be empty.
 
 	 */
-	pub read_from: Vec<Option<Arc<TxnNode>>>,           			// No Lock needed. Set after initialization. This link used for marking parent txn as garbage and release at correct time.
+	pub read_from: Vec<ShouldSyncCell<Option<Arc<TxnNode>>>>,           			// No Lock needed. Set after initialization. This link used for marking parent txn as garbage and release at correct time.
 	pub read_by: RwLock<Vec<Option<Weak<TxnNode>>>>,	            // Needs Lock. read_by updates dynamically. This link used for try_commit this txn.
-	pub cover: HashMap<String, Option<Arc<TxnNode>>>,	            // No Lock needed. Only being edited in construction. 
+	pub cover: HashMap<String, ShouldSyncCell<Option<Arc<TxnNode>>>>,	            // No Lock needed. Only being edited in construction. 
 	pub covered_by: RwLock<HashMap<String, Option<Weak<TxnNode>>>>, // RwLock needed. Read by many, could written by many. 
 
 	// Meta.
 	pub status: AtomicCell<TxnStatus>,
-	pub ev_nodes: Vec<Arc<EvNode>>, 	// Holds EvNode ownership. Consider switch to exclusive ownership.
+	pub ev_nodes: ShouldSyncCell<Vec<Arc<EvNode>>>, 	// Holds EvNode ownership. Consider switch to exclusive ownership.  Now the RWLock is used to setup loopback reference.
 	pub txn_req_id: u64,
 	// pub joined_states_to_read: Vec<&'a str>, // Reference to String. Since from ev_nodes.
 	pub ts: u64,
@@ -48,11 +50,11 @@ impl Drop for TxnNode {
 	 */
 	fn drop(&mut self) {
 		debug_assert!(self.status.load() == TxnStatus::COMMITED);
-		debug_assert!(self.read_from.iter().all(|tn| tn.is_none())
-						&& self.cover.iter().all(|(k, v)| v.is_none())
+		debug_assert!(self.read_from.iter().all(|tn| tn.read().is_none())
+						&& self.cover.iter().all(|(k, v)| v.read().is_none())
 					);
-		self.ev_nodes.iter().for_each(|en| {
-			unsafe { simpledb::DB.unwrap().release_version("default",&en.write, self.ts) };
+		self.ev_nodes.write().iter().for_each(|en| {
+			simpledb::DB.get().unwrap().release_version("default",&en.write, self.ts);
 		});
 	}	
 }
@@ -64,33 +66,36 @@ impl TxnNode{
 	pub fn from_message(msg: TxnMessage) -> Arc<Self> {
 		let tpl = &TXN_TEMPLATES[msg.type_idx as usize];
 		// TODO. Allocate from manager.
-		let mut new = Arc::new(
-			TxnNode{
+		let ta = Arc::new(TxnNode{
 				read_from: Vec::with_capacity(tpl.all_reads_length),  // Of the same size.h
 				read_by: RwLock::new(Vec::new()), // Empty and to construct.
-				cover: HashMap::new(),
+				cover: tpl.es
+					.iter().filter(|&e| e.has_write )
+					.map(|e| (e.write.clone(), ShouldSyncCell::new(None)))
+					.collect(),
 				covered_by: RwLock::new(HashMap::new()),
 
 				status: AtomicCell::new(TxnStatus::WAITING),
-				ev_nodes: Vec::new(),
+				ev_nodes: ShouldSyncCell::new(Vec::new()),
 				txn_req_id: msg.txn_req_id,
 
 				ts: 0,
 				uncommitted_parents: AtomicCell::new(0),
 				unfinished_events: AtomicCell::new(0),
-			}
-		);
-		let ev_nodes = tpl.es.iter().enumerate()
+			});
+		let ev_nodes: Vec<Arc<EvNode>> = tpl.es.iter().enumerate()
 			.map(|(idx, en)| Arc::new(
 				EvNode::from_template(
 					en,
 					idx as i32,
-					Arc::downgrade(&new),
+					Arc::downgrade(&ta.clone()),
 				)
 			))
 			.collect();
-		new.ev_nodes = ev_nodes;
-		new
+		let mut ev_nodes_place = ta.ev_nodes.write();
+		*ev_nodes_place = ev_nodes;
+		drop(ev_nodes_place);
+		ta
 	}
 
 	// set links on tpg for eventNodes. This function is dangerous.
@@ -104,7 +109,7 @@ impl TxnNode{
 			Unverified.
 		 */
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
-		self.ev_nodes.iter().map(|en| {
+		self.ev_nodes.read().iter().map(|en| {
 			debug_assert!(en.status.load() == EventStatus::CONSTRUCT);
 			// Set read_from and parent read_by.
 			let last_modify_hashmap = tb.read().unwrap();
@@ -117,13 +122,15 @@ impl TxnNode{
 					// Must linking to non-garbage txn.
 					debug_assert!(last.1.status.load() != TxnStatus::GARBAGE);
 					// TODO. Check if allocation.
-					en.read_from.push(Some(last.0.clone()));
+					let mut e = en.read_from[idx].write();
+					*e = Some(last.0.clone());
 					en.is_read_from_fulfilled[idx].store(
 						last.0.upgrade().unwrap().status.load() == EventStatus::ACCEPTED
 					);
 					last.0.upgrade().unwrap().add_read_by(&en);
 				} else {
-					en.read_from.push(None);
+					let mut e = en.read_from[idx].write();
+					*e = None;
 				}
 			});
 			drop(last_modify_hashmap);
@@ -133,7 +140,8 @@ impl TxnNode{
 				// Set self.cover and parent self.covered_by.
 				if let Some(Some(last)) = last_modify_hashmap.get(en.write.as_str()){
 					// Someone wrote. record and update list.
-					self.cover.insert(en.write.clone(), Some(last.1.clone())); // Clone and remove later.
+					let mut re = self.cover[&en.write].write(); // Clone and remove later.
+					*re = Some(last.1.clone());
 					last.1.add_covered_by(&en.write, &self_arc);
 				} else {};
 				// Update to state_last_modify anyway.
@@ -214,22 +222,24 @@ impl TxnNode{
 		// Release unused reference to release parentsRemove the linking to decrease reference count in either condition.
 		self.read_from.iter().map(|parent| {
 			debug_assert!({
-				parent.is_none() 
-				 || parent.as_ref().unwrap().status.load() == TxnStatus::COMMITED
+				parent.read().is_none() 
+				 || parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
 			}); // Could not be waiting or garbaged.
-			*parent = None;
+			let mut wp = parent.write();
+			*wp = None;
 		});
-		self.cover.iter().map(|(key, w_parent)|{
+		self.cover.iter().map(|(_, w_parent)|{
 			debug_assert!({
-				w_parent.is_none() 
-				 || w_parent.as_ref().unwrap().status.load() == TxnStatus::COMMITED
+				w_parent.read().is_none() 
+				 || w_parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
 			}); // Could not be waiting or garbaged.
-			*w_parent = None;
+			let mut wp = w_parent.write();
+			*wp = None;
 		});
 
 		debug_assert!({
-			self.read_from.iter().all(|r| r.is_none()) 
-			&& self.cover.iter().all(|(_, r)| r.is_none()) 
+			self.read_from.iter().all(|r| r.read().is_none()) 
+			&& self.cover.iter().all(|(_, r)| r.read().is_none()) 
 		});
 
 		// TODO. Possibly call PostTransactionUDF in the future.
@@ -311,7 +321,8 @@ impl TxnNode{
 		 */
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
 		self.status.store(TxnStatus::ABORTED);
-		self.ev_nodes.iter().map(|e|e.abort());
+		self.ev_nodes
+			.read().iter().map(|e|e.abort());
 		self.unfinished_events.store(0);
 		self.try_commit();
 	}
