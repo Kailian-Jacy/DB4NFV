@@ -1,11 +1,9 @@
-use std::cell::{Cell, RefCell};
 use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
 
 use crate::database::api::Database;
 use crate::database::simpledb;
-use crate::ds::events::Event;
 use crate::ds::transactions::TXN_TEMPLATES;
 use crate::external::ffi::{self, TxnMessage};
 use crate::tpg::ev_node::{EvNode, EventStatus};
@@ -51,7 +49,7 @@ impl Drop for TxnNode {
 	fn drop(&mut self) {
 		debug_assert!(self.status.load() == TxnStatus::COMMITED);
 		debug_assert!(self.read_from.iter().all(|tn| tn.read().is_none())
-						&& self.cover.iter().all(|(k, v)| v.read().is_none())
+						&& self.cover.iter().all(|(_k, v)| v.read().is_none())
 					);
 		self.ev_nodes.write().iter().for_each(|en| {
 			simpledb::DB.get().unwrap().release_version("default",&en.write, self.ts);
@@ -109,7 +107,7 @@ impl TxnNode{
 			Unverified.
 		 */
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
-		self.ev_nodes.read().iter().map(|en| {
+		self.ev_nodes.read().iter().for_each(|en| {
 			debug_assert!(en.status.load() == EventStatus::CONSTRUCT);
 			// Set read_from and parent read_by.
 			let last_modify_hashmap = tb.read().unwrap();
@@ -136,7 +134,7 @@ impl TxnNode{
 			drop(last_modify_hashmap);
 			if en.has_write {
 				let self_arc =  en.txn.upgrade().unwrap().clone();
-				let mut last_modify_hashmap = tb.write().unwrap();
+				let last_modify_hashmap = tb.write().unwrap();
 				// Set self.cover and parent self.covered_by.
 				if let Some(Some(last)) = last_modify_hashmap.get(en.write.as_str()){
 					// Someone wrote. record and update list.
@@ -323,7 +321,7 @@ impl TxnNode{
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
 		self.status.store(TxnStatus::ABORTED);
 		self.ev_nodes
-			.read().iter().map(|e|e.abort());
+			.read().iter().for_each(|e|e.abort());
 		self.unfinished_events.store(0);
 		self.try_commit();
 	}

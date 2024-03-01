@@ -1,5 +1,4 @@
 use crate::external::{ffi, pipe};
-use crate::external::pipe::PIPE_IN;
 use crate::tpg::tpg::TPG;
 use crate::tpg::{
 	txn_node::*,
@@ -12,7 +11,7 @@ use crate::config::CONFIG;
 
 // This worker thread constructs TPG streamingly.
 // TODO. Slab memory allocation to reduce the allocation time.
-pub fn construct_thread(tid: i16){
+pub fn construct_thread(_: i16){
 	// TODO. Add support for multi-table later.
 	let table_name = "default";
 

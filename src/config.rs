@@ -26,6 +26,8 @@ pub struct Config {
     pub transaction_pooling_size: usize,
     // Debug mode enables verbose output.
     pub debug_mode: bool,
+    // Dynamically linked library full path.
+    pub vnf_runtime_path: String,
 }
 
 lazy_static! {
@@ -43,11 +45,12 @@ impl Default for Config {
             ringbuffer_full_to_panic: false,
             transaction_pooling_size: 10000,
             debug_mode: false,
+            vnf_runtime_path: String::from("./runtime/vnf/SL/libkernel-dynamic.so")
         }
     }
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(StructOpt)]
 #[structopt(name = "config-reader", about = "Reads configuration from JSON file.")]
 pub struct Cli {
     #[structopt(short, long, parse(from_os_str))]

@@ -38,7 +38,7 @@ impl<T: RingBufContent> RingBuf<T> {
 		assert!(cap > 0);
 		let mut v = Vec::with_capacity(cap);
 		// TODO: Possibly with Vec.from_raw_parts.
-		for i in 0..cap {
+		for _ in 0..cap {
 			v.push(RwLock::new(T::new()));
 		}
         Self {
@@ -97,13 +97,11 @@ impl<T: RingBufContent> RingBuf<T> {
 	}
 	// Truncate from the tail.
 	pub fn truncate_from(&self, index: usize) {
-		debug_assert!(index >= 0);
 		debug_assert!(index < self.len() as usize);
 		self.end.swap((&self.start() + index) % &self.cap);
 	}
 	// Truncate from the head.
 	pub fn discard_before(&self, index: usize) {
-		debug_assert!(index >= 0);
 		debug_assert!(index < self.len() as usize);
 		self.start.swap((self.start() + index) % self.cap);
 	}

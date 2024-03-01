@@ -1,11 +1,8 @@
-use std::cell::RefCell;
-use std::sync::{mpsc::*, Arc, Mutex, RwLock, Weak};
-use std::sync::mpsc::Receiver;
-use std::collections::HashMap;
+use std::sync::{mpsc::*, Arc, RwLock, Weak};
 use crossbeam::atomic::AtomicCell;
 
 use crate::database::api::Database;
-use crate::database::simpledb::{self, SimpleDB};
+use crate::database::simpledb::{self};
 use crate::ds::events::Event;
 use crate::external::ffi;
 use crate::tpg::txn_node::TxnStatus;
@@ -85,7 +82,7 @@ impl EvNode {
         
         // Pre-allocate read_from and is_read_from_fulfilled vectors
         let mut read_from = Vec::with_capacity(reads_length);
-		for i in 0..reads_length {
+		for _ in 0..reads_length {
 		    read_from.push(ShouldSyncCell::new(None));
 		}
         let is_read_from_fulfilled = std::iter::repeat_with(|| AtomicCell::new(false))

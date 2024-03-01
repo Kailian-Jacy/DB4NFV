@@ -1,9 +1,9 @@
-use crate::{database::{api::Database, simpledb::DB}, ds::events, external::ffi::execute_event, tpg::{ev_node::{EvNode, EventStatus}, tpg::{self, TPG}}};
-use std::{fmt::write, str, sync::Arc};
+use crate::{database::{api::Database, simpledb::DB}, tpg::{ev_node::{EvNode, EventStatus}, tpg::TPG}};
+use std::sync::Arc;
 
 // These worker threads traverse through TPG and execute the operations.
 // TODO. db shall be used as shared.
-pub fn execute_thread(tid: usize){
+pub fn execute_thread(_: usize){
 	let mut evn_option : Option<Arc<EvNode>> = None; // Option: if we have migrated from related one, we don't need to fetch from queue.
 	loop {
 		if evn_option.is_none() {

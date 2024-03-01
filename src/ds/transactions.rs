@@ -30,7 +30,7 @@ impl Txn {
         let mut all_writes = HashMap::new();
 
         // Iterate through each event in the transaction
-        self.es.iter_mut().enumerate().map(|(idx,event)| {
+        self.es.iter_mut().enumerate().for_each(|(idx,event)| {
 			// To make close if cancel write dependency.
 			event.reads.push(event.write.clone());
 			event.reads.sort();

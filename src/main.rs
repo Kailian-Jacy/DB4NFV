@@ -1,7 +1,6 @@
 // mod tpg_builder;
 use std::path::PathBuf;
 use std::env;
-use std::sync::Arc;
 use std::thread;
 
 mod ds;
@@ -17,7 +16,7 @@ use database::{
     simpledb::{self, SimpleDB}
 };
 use external::ffi::{self, all_variables};
-use tpg::tpg::Tpg;
+use tpg::tpg::{Tpg, TPG};
 use worker::{
     worker_threads::execute_thread,
     construct_thread::construct_thread,
@@ -36,17 +35,19 @@ fn main() {
 
     config::init(file_path);
     utils::bind_to_cpu_core(0);
+
+    ffi::init();
     ffi::init_sfc(0, Vec::new());
 
     // Initiate Database.
     let mut db = SimpleDB::new();
     db.add_table("default", all_variables());
-    simpledb::DB.set(db);  
+    let _ = simpledb::DB.set(db);  
     
     /*
         TODO: Initialize db tables as well as tpg hash maps.
     */
-    let tpg = Arc::new(Tpg::new(ffi::all_variables()));
+    let _ = TPG.set(Tpg::new(ffi::all_variables()));
 
     /*
         Spawn Vnf threads and bind to core.

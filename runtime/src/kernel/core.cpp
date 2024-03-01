@@ -1,6 +1,6 @@
 // #include "core.hpp"
 #include "utils.hpp"
-#include "core.hpp"
+#include "ffi.h"
 
 using namespace vnf;
 using namespace std;
@@ -417,7 +417,71 @@ void *serverThread(void *args) {
                     So we can decide this is the message from the database.
                 */
                 if (perCoreStates[coreId].isDatastoreSocket(currentSocketId)) {
-                    assert(false);
+                    while (true) {
+                        DSPacketHandler pkt;
+                        int pkt_len, retval;
+                        pkt.clear_pkt();
+                        /*
+                            We've predefined the data format here: first byte is an integer suggesting length.
+                            And the others are the true data.
+                        */
+                        retval = readFromStream(currentSocketId, pkt.data, sizeof(int));
+                        if (retval < 0) {
+                            if (errno == EAGAIN) {
+                                break;
+                            }
+                        } else {
+                            perCoreStates[coreId].numPacketsRecvFromDs++;
+                            memmove(&pkt_len, pkt.data, sizeof(int) * sizeof(uint8_t));
+                            pkt.clear_pkt();
+                            retval = readFromStream(currentSocketId, pkt.data, pkt_len);
+                            pkt.data_ptr = 0;
+                            pkt.len = retval;
+                            if (retval < 0) {
+                                spdlog::error("Error: Packet from HSS Corrupt, break");
+                                break;
+                            }
+                        }
+                        int socketId, bufKey;
+                        string buffer;
+                        pkt.extract_item(socketId);
+                        pkt.extract_item(bufKey);
+                        pkt.extract_item(buffer);
+                        buffer += '\0';
+
+                        void *dsMalloc;
+                        globals.dataStoreLock.lock();
+                        if (globals.dsSize == userConfig->DATASTORE_THRESHOLD) {
+                            freeDSPool();
+                        }
+                        // cache the state
+                        dsMalloc = globals.dsMemPoolManager.malloc();
+                        globals.dsSize++;
+                        std::memcpy(dsMalloc, buffer.c_str(), buffer.length());
+                        // The local datastore is used as cache for reading.
+                        globals.localDatastore[bufKey] = dsMalloc;
+                        globals.localDatastoreLens[bufKey] = buffer.length();
+                        globals.cachedRemoteDatastore[bufKey] = dsMalloc;
+                        cache_void_list[dsMalloc] = bufKey;
+                        globals.dataStoreLock.unlock();
+
+                        ConnId connId = ConnId(coreId, socketId);
+
+                        // request object id extractor from packet
+                        ReqObjExtractorFn extractor = perCoreStates[coreId].socketIdReqObjIdExtractorMap[socketId];
+                        int reqObjId = extractor == nullptr ? 0 : extractor(const_cast<char *>(buffer.c_str()), 0); // fix me : replace 0 packetlen with actual packet len
+                        cout.flush();
+
+                        // callback. This part handles the DataBase return function.
+                        DSCallbackFn callback = perCoreStates[coreId].socketIdDSCallbackMap[socketId];
+                        callback(connId, reqObjId,
+                                 perCoreStates[coreId].socketIdReqObjIdToReqObjMap[socketId][reqObjId],
+                                 (void *) buffer.c_str(),
+                                 perCoreStates[coreId].packetNumber++,
+                                 // The buffer size needs to be resigned before..
+                                 userConfig->BUFFER_SIZE, 0);
+                    }
+
                     continue;
                 } 
 
@@ -506,7 +570,7 @@ void *serverThread(void *args) {
                     perCoreStates[connId.coreId].monitor.allocate_packet();
                     assert(packet != NULL);
                     string currentPacket = prependedBuffer.substr((uint) packetStart, (uint) packetLength);
-                    memcpy(packet, currentPacket.c_str(), (size_t) (packetLength));
+                    std::memcpy(packet, currentPacket.c_str(), (size_t) (packetLength));
 
                     /* request object id extraction from packet */
                     // ReqObjExtractorFn extractor = perCoreStates[coreId].socketIdReqObjIdExtractorMap[socketId];
@@ -988,87 +1052,86 @@ void registerDSCallback(ConnId& connId, enum EventType eventType, DSCallbackFn c
 
 // Error call back is of the same format as callback. We don't need to return anything if we don't need callback.
 ConnId& vnf::ConnId::storeData(string tableName, int key, enum DataLocation location, void *value, int valueLen, DSCallbackFn callback) {
-    assert(false);
     if (callback != nullptr) {
         // todo call this somewhere
         registerDSCallback(*this, ERROR, callback);
     }
 
-    // if (location == REMOTE || location == UDS) {
-    //     int coreId = this->coreId;
-    //     int socketId = this->socketId;
-    //     char *s2;
+    if (location == REMOTE || location == UDS) {
+        int coreId = this->coreId;
+        int socketId = this->socketId;
+        char *s2;
 
-    //     globals.dataStoreLock.lock();
+        globals.dataStoreLock.lock();
 
-    //     if (globals.dsSize == userConfig->DATASTORE_THRESHOLD) {
-    //         freeDSPool();
-    //     }
+        if (globals.dsSize == userConfig->DATASTORE_THRESHOLD) {
+            freeDSPool();
+        }
 
-    //     /* TODO: Check in cache before allocating */
-    //     /* TODO: Why same dsMemPoolManager for both cache and localDs */
-    //     void *dsMalloc = globals.dsMemPoolManager.malloc();
-    //     globals.dsSize++;
-    //     memcpy(dsMalloc, value, static_cast<size_t>(valueLen) + 1);
-    //     /* TODO: check if these lines can be commented */
-    //     /* globals.localDatastore[key] = dsMalloc; */
-    //     /* globals.localDatastoreLens[key] = valueLen; */
-    //     globals.cachedRemoteDatastore[key] = dsMalloc;
-    //     cache_void_list[dsMalloc] = key;
+        /* TODO: Check in cache before allocating */
+        /* TODO: Why same dsMemPoolManager for both cache and localDs */
+        void *dsMalloc = globals.dsMemPoolManager.malloc();
+        globals.dsSize++;
+        std::memcpy(dsMalloc, value, static_cast<size_t>(valueLen) + 1);
+        /* TODO: check if these lines can be commented */
+        /* globals.localDatastore[key] = dsMalloc; */
+        /* globals.localDatastoreLens[key] = valueLen; */
+        globals.cachedRemoteDatastore[key] = dsMalloc;
+        cache_void_list[dsMalloc] = key;
 
-    //     globals.dataStoreLock.unlock();
+        globals.dataStoreLock.unlock();
 
-    //     string snd_cmd = "set", snd_table = "abc", snd_value = "xyz";
-    //     DSPacketHandler packetHandler;
-    //     packetHandler.clear_pkt();
-    //     packetHandler.append_item(socketId);
-    //     packetHandler.append_item(snd_cmd);
-    //     packetHandler.append_item(snd_table);
-    //     packetHandler.append_item(key);
-    //     s2 = (char *) (value);
-    //     string s3(s2);
-    //     packetHandler.append_item(s3);
-    //     packetHandler.prepend_len();
+        string snd_cmd = "set", snd_table = "abc", snd_value = "xyz";
+        DSPacketHandler packetHandler;
+        packetHandler.clear_pkt();
+        packetHandler.append_item(socketId);
+        packetHandler.append_item(snd_cmd);
+        packetHandler.append_item(snd_table);
+        packetHandler.append_item(key);
+        s2 = (char *) (value);
+        string s3(s2);
+        packetHandler.append_item(s3);
+        packetHandler.prepend_len();
 
-    //     if (perCoreStates[coreId].dsSockIdSetLooper == 0) {
-    //         ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId1);
-    //         dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
-    //         perCoreStates[coreId].dsSockIdSetLooper = 1;
-    //     } else {
-    //         ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId2);
-    //         dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
-    //         perCoreStates[coreId].dsSockIdSetLooper = 0;
-    //     }
+        if (perCoreStates[coreId].dsSockIdSetLooper == 0) {
+            ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId1);
+            dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+            perCoreStates[coreId].dsSockIdSetLooper = 1;
+        } else {
+            ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId2);
+            dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+            perCoreStates[coreId].dsSockIdSetLooper = 0;
+        }
 
-    //     return *this;
-    // }
+        return *this;
+    }
 
-    // if (location == LOCAL) {
-    //     globals.dataStoreLock.lock();
+    if (location == LOCAL) {
+        globals.dataStoreLock.lock();
 
-    //     if (globals.dsSize == userConfig->DATASTORE_THRESHOLD) {
-    //         freeDSPool();
-    //     }
+        if (globals.dsSize == userConfig->DATASTORE_THRESHOLD) {
+            freeDSPool();
+        }
 
-    //     void *dsMalloc;
-    //     if (globals.keyExistsInLocalDatastore(key)) {
-    //         dsMalloc = globals.localDatastore[key];
-    //     } else {
-    //         dsMalloc = globals.dsMemPoolManager.malloc();
-    //         globals.dsSize++;
-    //     }
-    //     memcpy(dsMalloc, value, static_cast<size_t>(valueLen) + 1);
-    //     globals.localDatastore[key] = dsMalloc;
-    //     globals.localDatastoreLens[key] = valueLen;
+        void *dsMalloc;
+        if (globals.keyExistsInLocalDatastore(key)) {
+            dsMalloc = globals.localDatastore[key];
+        } else {
+            dsMalloc = globals.dsMemPoolManager.malloc();
+            globals.dsSize++;
+        }
+        std::memcpy(dsMalloc, value, static_cast<size_t>(valueLen) + 1);
+        globals.localDatastore[key] = dsMalloc;
+        globals.localDatastoreLens[key] = valueLen;
 
-    //     globals.dataStoreLock.unlock();
+        globals.dataStoreLock.unlock();
 
-    //     return *this;
-    // }
+        return *this;
+    }
 
-    // spdlog::warn("storeData: Unknown location used {}", location);
+    spdlog::warn("storeData: Unknown location used {}", location);
 
-    // return *this;
+    return *this;
 }
 
 ConnId& vnf::ConnId::retrieveData(string tableName, int key, enum DataLocation location, vnf::DSCallbackFn callback, int reqObjId) {
@@ -1091,15 +1154,53 @@ ConnId& vnf::ConnId::retrieveData(string tableName, int key, enum DataLocation l
                      perCoreStates[coreId].socketIdReqObjIdToReqObjMap[socketId][reqObjId],
                      packet, userConfig->BUFFER_SIZE, 0, 0);
         } else {
-            assert(false);
+            string sndCmd = "get";
+            DSPacketHandler packetHandler;
+            packetHandler.clear_pkt();
+            packetHandler.append_item(socketId);
+            packetHandler.append_item(sndCmd);
+            packetHandler.append_item(tableName);
+            packetHandler.append_item(key);
+            packetHandler.prepend_len();
+
+            if (perCoreStates[coreId].dsSockIdGetLooper == 0) {
+                ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId1);
+                dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+                perCoreStates[coreId].dsSockIdGetLooper = 1;
+            } else {
+                ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId2);
+                dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+                perCoreStates[coreId].dsSockIdGetLooper = 0;
+            }
+            // todo check this
         }
+
         return *this;
     }
 
     if (location == REMOTE || location == UDS) {
         // todo check this
         registerDSCallback(*this, READ, callback);
-        assert(false);
+
+        string sndCmd = "get";
+        DSPacketHandler packetHandler;
+        packetHandler.clear_pkt();
+        packetHandler.append_item(socketId);
+        packetHandler.append_item(sndCmd);
+        packetHandler.append_item(tableName);
+        packetHandler.append_item(key);
+        packetHandler.prepend_len();
+
+        if (perCoreStates[coreId].dsSockIdGetLooper == 0) {
+            ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId1);
+            dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+            perCoreStates[coreId].dsSockIdGetLooper = 1;
+        } else {
+            ConnId dsConnId = ConnId(coreId, perCoreStates[coreId].dsSocketId2);
+            dsConnId.sendData((char *) packetHandler.data, packetHandler.len);
+            perCoreStates[coreId].dsSockIdGetLooper = 0;
+        }
+        // todo check this
 
         return *this;
     }
@@ -1729,35 +1830,53 @@ void __request(uint64_t ts, uint64_t txnReqId, const char *key, int flag, ConnId
     char data[len];
     int offset = 0;
 
-    memcpy(data + offset, &ts, sizeof(uint64_t));
+    std::memcpy(data + offset, &ts, sizeof(uint64_t));
     offset += sizeof(uint64_t);
-    data[offset++] = uint8_t(';');
+    data[offset++] = char(';');
 
-    memcpy(data + offset, &txnReqId, sizeof(uint64_t));
+    std::memcpy(data + offset, &txnReqId, sizeof(uint64_t));
     assert((txnReqId & 0xfffffff000000000) == 0);
     offset += sizeof(uint64_t);
     data[offset++] = ';';
 
-    memcpy(data + offset, key, strlen(key));
+    std::memcpy(data + offset, key, strlen(key));
     offset += strlen(key);
     data[offset++] = ';';
 
-    memcpy(data + offset, &flag, sizeof(int));
+    std::memcpy(data + offset, &flag, sizeof(int));
     offset += sizeof(int);
     data[offset++] = ';';
 
     // Todo. remove this field.
     int isAbort_i = 0;
-    memcpy(data + offset, &isAbort_i, sizeof(int));
+    std::memcpy(data + offset, &isAbort_i, sizeof(int));
     offset += sizeof(int);
     data[offset] = '\0';
+
+    // Copy the data into the msg byte array
+    // auto msg = env->NewByteArray(len);
+    // assert(msg != NULL);
+    // env->SetByteArrayRegion(msg, 0, len, data);
+    rust::String ret = rust::String(string(data));
+
+    // jclass cls = env->FindClass("intellistream/morphstream/api/input/InputSource");
+    // assert(cls != NULL);
+
+    // // jmethodID methodId = env->GetMethodID(cls, "insertInputData", "(Ljava/lang/String;)V");
+    // jmethodID methodId = env->GetStaticMethodID(cls, "libVNFInsertInputData", "([B)V");
+    // assert(methodId != NULL);
 
 #ifdef DEBUG
     perCoreStates[connId.coreId].monitor.update_latency(0, ts);
 #endif
 
-    deposit_transaction(rust::String(string(data)));
+    // We can't cache JNIenv and related things according to https://stackoverflow.com/questions/12420463/keeping-a-global-reference-to-the-jnienv-environment.
+    // env->CallStaticVoidMethod(cls, methodId, msg);
+    deposit_transaction(ret);
     spdlog::debug("[DEBUG:] txn request sent. ");
+
+    // Clean up resources when done
+    // env->DeleteLocalRef(msg); // Release the reference to msg
 }
 
 vector<int> pbdSeparator(char* buffer, int bufLen) {
@@ -1780,34 +1899,68 @@ vector<int> pbdSeparator(char* buffer, int bufLen) {
     return ret;
 }
 
+// TODO. TO BE DEBUGGED.
 rust::String Init_SFC(int32_t argc, rust::Vec<rust::String> argv){
 #if DEBUG
     perCoreStates[0].monitor.report_header();
     spdlog::set_level(spdlog::level::info);
 #endif
-    // Convert the jobjectArray to a char* array
+        // Convert the jobjectArray to a char* array
     char **argvC;
     int arrayLength;
     if (!argv.empty())
     {
-        arrayLength = argv.size();
-        argvC = new char *[arrayLength];
-        for (int i = 0; i < arrayLength; i++)
-        {
-            assert(false); // TODO.
-            // argvC[i] = strcpy(std::string(argv[i]).c_str()); 
-        }
-        }  else {
-            arrayLength = 0;
-        }
+        // arrayLength = env->GetArrayLength(argv);
+        // argvC = new char *[arrayLength];
+        // for (int i = 0; i < arrayLength; i++)
+        // {
+        //     // string s = (jstring)env->GetObjectArrayElement(argv, i);
+        //     // const char *str = env->GetsUTFChars(string, 0);
+        //     // argvC[i] = strdup(str);
+        //     // env->ReleasesUTFChars(string, str);
+        // }
+    }  else {
+        arrayLength = 0;
+    }
+
+        // Find the method and save in globals.
+        // Find the class that contains the sendTxnRequest method
+        // jclass cls = env->FindClass("intellistream/morphstream/api/input/InputSource");
+        // assert( cls != NULL);
+
+        // Get a reference to the txn method
+        // jmethodID methodId = env->GetStaticMethodID(cls, "libVNFInsertInputData", "(Ljava/lang/String;)V");
+
+        // Create a static object of the InputSource class.
+        // jmethodID constructor = env->GetMethodID(cls, "<init>", "()V");
+        // assert( constructor != NULL);
+
+        // jobject IS = env->NewObject(cls, constructor);
+        // Set Permanenet Ref.
+
+        // jmethodID methodId = env->GetStaticMethodID(cls, "insertInputData", "(Ljava/lang/String;)V");
+        // assert( methodId != NULL);
+
+        // Call the __request method
+        // jint rs = env->GetJavaVM(&globals.__jvm);
+        // assert(rs == JNI_OK);
+
+        // Call JVM. Errored. TODO.
+        // globals.__java_env->CallVoidMethod(
+        //     globals.__client_obj, globals.__request,
+        //     globals.__java_env->NewStringUTF(msg)
+        //     // Other parameters to be added.
+        // );
+
         // TODO. Maybe we can provide command line parameters pass-in.
 
         // Call the __init_SFC function
-        int res = VNFMain(argc, argvC);
+        int res = VNFMain(argc, nullptr);
 
         if (res < 0){
             perror("VNFMain returns error");
-            return  rust::String(std::string(""));
+            return  rust::string(std::string(""));
+            // return  env->NewStringUTF(std::string("").c_str());
         }
 
         vnf::initLibvnf(globals.config.coreNumbers, 128, "127.0.0.1", std::vector<int>(), 131072, vnf::LOCAL);
@@ -1863,31 +2016,33 @@ rust::String Init_SFC(int32_t argc, rust::Vec<rust::String> argv){
 
 		// Return the result as a Java string
 		return rust::String(globals.sfc.NFs());
+		// return env->NewStringUTF(globals.sfc.NFs().c_str());
 }
 
 // Actual vnfs loop.
 void VNFThread(int32_t c, rust::Vec<rust::String> v){
-	startEventLoop();
+    // int rs = env->GetJavaVM(&globals.__jvm);
+    // assert(rs == JNI_OK);
+    // globals.__env = env;
+    startEventLoop();
 }
 
 
 // The callback handling entrance.
-// JNIEXPORT jbyteArray 
-// JNICALL Java_intellistream_morphstream_util_libVNFFrontend_NativeInterface__1execute_1sa_1udf
-//   (JNIEnv * env, jclass cls, jlong txnReqId_jni, jint saIdx , jbyteArray value, jint param_count){
-rust::String execute_sa_udf(uint64_t txnReqId_jni, int saIdx, rust::Vec<uint8_t> v, int param_count){
     // Save the value in ctx.
+rust::String execute_sa_udf(uint64_t txnReqId_jni, int saIdx, rust::Vec<uint8_t> value, int param_count){
     uint64_t txnReqId = 0;
     // reverse for switching endianness.
     uint8_t *buf = reinterpret_cast<uint8_t *>(&txnReqId);
     uint8_t *buf_jni = reinterpret_cast<uint8_t *>(&txnReqId_jni);
-    for (int  i = 0; i < sizeof(uint64_t); i += 1) {
+    for (int i = 0; i < sizeof(uint64_t); i += 1)
+    {
         buf[sizeof(uint64_t) - i - 1] = buf_jni[i];
-    }
-    assert((txnReqId & 0xffffff0000000000) == 0);
+        }
+        assert((txnReqId & 0xffffff0000000000) == 0);
 
-	int coreId = COREID(txnReqId);
-    auto ctx = perCoreStates[coreId].packetNumberContextMap.at(PACKETID(txnReqId));
+        int coreId = COREID(txnReqId);
+        auto ctx = perCoreStates[coreId].packetNumberContextMap.at(PACKETID(txnReqId));
 
 #ifdef DEBUG
     perCoreStates[coreId].monitor.update_latency(1, ctx->_full_ts());
@@ -1898,54 +2053,63 @@ rust::String execute_sa_udf(uint64_t txnReqId_jni, int saIdx, rust::Vec<uint8_t>
     1. Requesting another transaction.
     2. Return from the saUDF.
     */
-    std::vector<uint8_t> value;
-    std::copy(v.begin(), v.end(), std::back_inserter(value));
-    assert(v.size() == value.size());
 
     // Copy allocation value.
-    uint8_t *inputBuffer = value.data();
+    // jbyte *inputBuffer = env->GetByteArrayElements(value, NULL);
+    std::vector<uint8_t> v;
+    std::copy(value.begin(), value.end(), std::back_inserter(v));
+    assert(value.size() == v.size());
 
     // Length. Here we are getting the length from: field number; type.
     int length = STATE_TYPE_SIZE * param_count;
 
-    auto tmp = new char[length]; // TO be Optimized.
-    memcpy(tmp, inputBuffer, length);
+    // auto tmp = new char[length]; // TO be Optimized.
+    // memcpy(tmp, v.data(), length);
     // ctx->_set_value_from_callback(tmp, length);
 
     ConnId conn = ConnId(COREID(txnReqId), ctx->_old_socket());
 
     assert(ctx->AppIdx() != -1);
     // Call actual sa udf.
-	STATE_TYPE res = (*globals.sfc.SFC_chain[ctx->AppIdx()]->SAs[saIdx]->txnHandler_)(conn, *ctx, tmp, length);
+	STATE_TYPE res = (*globals.sfc.SFC_chain[ctx->AppIdx()]->SAs[saIdx]->txnHandler_)(conn, *ctx, (char *)(v.data()), length);
 	int abortion = ( ctx->ReturnValue())? 1: 0;
 
-    delete tmp;
+    // delete tmp;
 
-    auto _result = new char[sizeof(int) + STATE_TYPE_SIZE];
+	// Write back.
+    // if (env == nullptr) {
+    //     perror("core.cpp.Java_intellistream_morphstream_util_libVNFFrontend_NativeInterface__1execute_1sa_1udf.NewByteArray.nullptr");
+    // }
+
+    // auto _result = env->NewByteArray(sizeof(int) + STATE_TYPE_SIZE);
+    auto result = new char[sizeof(int) + STATE_TYPE_SIZE];
     // Set Abortion.
-	memcpy(_result, reinterpret_cast<uint8_t *>(&abortion), sizeof(int));
+    memcpy(result, reinterpret_cast<char *>(&abortion), sizeof(int));
+	// env->SetByteArrayRegion(_result, static_cast<jsize>(0), static_cast<jsize>(sizeof(int)), reinterpret_cast<jbyte *>(&abortion));
     // Set result.
-    memcpy(_result + sizeof(int), reinterpret_cast<uint8_t *>(&res), STATE_TYPE_SIZE );
+    memcpy(result + sizeof(int), reinterpret_cast<char *>(&res), sizeof(STATE_TYPE_SIZE));
+    // env->SetByteArrayRegion(_result, static_cast<jsize>(sizeof(int)), static_cast<jsize>(STATE_TYPE_SIZE), reinterpret_cast<jbyte *>(&res));
 
 #ifdef DEBUG
                     perCoreStates[coreId].monitor.update_latency(2, ctx->_full_ts());
 #endif
 
     // How to release write back value? We don't need to release. They are managed.
-    return rust::String(string(_result));
+    return rust::String(string(result));
   }
 
-// // Report done.
+// Report done.
 // JNIEXPORT jint 
 // JNICALL Java_intellistream_morphstream_util_libVNFFrontend_NativeInterface__1_1txn_1finished
 //   (JNIEnv * env, jclass cls, jlong txnReqId_jni){
-int32_t txn_finished(uint64_t txnReqId_jni){
-    // Save the value in ctx.
+  int32_t txn_finished(uint64_t txnReqId_jni){
+      // Save the value in ctx.
     uint64_t txnReqId = 0;
     // reverse for switching endianness.
     uint8_t *buf = reinterpret_cast<uint8_t *>(&txnReqId);
     uint8_t *buf_jni = reinterpret_cast<uint8_t *>(&txnReqId_jni);
-    for (int  i = 0; i < sizeof(uint64_t); i += 1) {
+    for (int i = 0; i < sizeof(uint64_t); i += 1)
+    {
         buf[sizeof(uint64_t) - i - 1] = buf_jni[i];
     }
     assert((txnReqId & 0xffffff0000000000) == 0);
@@ -2200,8 +2364,39 @@ void DB4NFV::Transaction::Trigger(vnf::ConnId& connId, Context &ctx, const char 
     // Register call back parameters in the context.
     perCoreStates[connId.coreId].packetNumberContextMap[ctx._ts_low_32b()] = &ctx;
 
+    // JNIEnv * env; 
+    // GetJniEnv(&env);
 	__request(ctx._full_ts(), TXNREQID(connId.coreId, ctx._ts_low_32b()), key, this->txnIndex, connId);
 }
+
+// // Get JVM and jenv related. FIXME. Optimize.
+// // TODO. May not be working.
+// bool GetJniEnv(JNIEnv **env)
+// {
+// 	bool did_attach_thread = false;
+// 	*env = nullptr;
+// 	// Check if the current thread is attached to the VM
+// 	auto get_env_result = globals.__jvm->GetEnv((void **)env, JNI_VERSION_1_6);
+// 	if (get_env_result == JNI_EDETACHED)
+// 	{
+// 		if (globals.__jvm->AttachCurrentThread((void **)env, NULL) == JNI_OK)
+// 		{
+// 			did_attach_thread = true;
+// 		}
+// 		else
+// 		{
+// 			assert(false);
+// 		}
+// 	}
+// 	else if (get_env_result == JNI_EVERSION)
+// 	{
+// 		assert(false);
+// 	}
+// 	return did_attach_thread;
+//     // // jint rs = (*GetGlobal().__jvm).AttachCurrentThread((void **)&env, NULL);
+//     // // assert(rs == JNI_OK);
+// 	// return true;
+// }
 
 inline int Monitor::packet_waiting(int coreId){
     return perCoreStates[coreId].packetNumberContextMap.size();

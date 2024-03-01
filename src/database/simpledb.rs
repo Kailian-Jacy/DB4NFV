@@ -1,7 +1,5 @@
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
-use std::iter::Once;
-use std::sync::Arc;
 use crate::config::CONFIG;
 use crate::database::api;
 use crate::ds::ringbuf::{self, RingBuf};
@@ -160,6 +158,7 @@ impl Table {
 		};
 		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
 		obj_ref.unwrap().1.write().unwrap().value = String::from(value);
+		// TODO: Search back.
 	}
 
 	fn release_version(&self, key: &str, ts: u64){
