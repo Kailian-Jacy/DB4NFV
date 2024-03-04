@@ -75,7 +75,7 @@ fn deposit_transaction(a: String){
 pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	// Call the unsafe extern function and receive the resulting JSON string
 	let json_string = 
-		ffi::Init_SFC(argc, argv);
+		unsafe {ffi::Init_SFC(argc, argv)};
 
 	if CONFIG.read().unwrap().debug_mode {
 		println!("{}", json_string);
@@ -117,14 +117,14 @@ pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
 }
 
 pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
-	ffi::VNFThread(c, v)
+	unsafe{ffi::VNFThread(c, v)}
 }
 
 pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
-	(true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count))
+	(true, unsafe { ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count) })
 }
 
 pub(crate) fn txn_finished_sign(txn_req_id: u64) -> i32 {
-	ffi::txn_finished(txn_req_id)
+	unsafe { ffi::txn_finished(txn_req_id) }
 }
 
