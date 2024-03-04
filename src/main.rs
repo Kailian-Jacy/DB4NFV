@@ -36,7 +36,6 @@ fn main() {
     config::init(file_path);
     utils::bind_to_cpu_core(0);
 
-    ffi::init();
     ffi::init_sfc(0, Vec::new());
 
     // Initiate Database.

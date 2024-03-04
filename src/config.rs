@@ -87,8 +87,9 @@ pub fn init(file_path: PathBuf) {
     // Read the configuration from the JSON file
 	let mut glb = CONFIG.write().unwrap();
 	*glb = read_config_from_file(file_path.to_str().unwrap()).unwrap();
+    drop(glb);
 
-    if CONFIG.read().unwrap().debug_mode {
+    if CONFIG.try_read().unwrap().debug_mode {
 	    println!("== Config Inited.");
         println!("{:?}", CONFIG.read().unwrap());
     }

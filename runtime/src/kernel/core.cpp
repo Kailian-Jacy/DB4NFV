@@ -492,12 +492,13 @@ void *serverThread(void *args) {
                 string currentProtocol = perCoreStates[coreId].socketProtocolMap[socketId];
                 int streamNum = -1;
                 /* read from socket as per the protocol specified */
-                if(currentProtocol == "sctp"){
-                    struct sctp_sndrcvinfo s_sndrcvinfo;
-                    numBytesRead = (int) sctp_recvmsg(socketId, buffer, (size_t)userConfig->BUFFER_SIZE, (struct sockaddr *) NULL, 0, &s_sndrcvinfo, NULL);
-                    streamNum = s_sndrcvinfo.sinfo_stream;
-                }
-                else if(currentProtocol == "tcp"){
+                // if(currentProtocol == "sctp"){
+                //     struct sctp_sndrcvinfo s_sndrcvinfo;
+                //     numBytesRead = (int) sctp_recvmsg(socketId, buffer, (size_t)userConfig->BUFFER_SIZE, (struct sockaddr *) NULL, 0, &s_sndrcvinfo, NULL);
+                //     streamNum = s_sndrcvinfo.sinfo_stream;
+                // }
+				// else if(currentProtocol == "tcp"){
+                if(currentProtocol == "tcp"){
                     numBytesRead = (int) read(socketId, buffer, (size_t) userConfig->BUFFER_SIZE);
                 }
                 else if(currentProtocol == "uds"){
@@ -600,9 +601,10 @@ void *serverThread(void *args) {
                     PendingData dataToSend = perCoreStates[coreId].socketIdPendingDataQueueMap[socketId].front();
                     dataLen = dataToSend.dataLen;
                     data = dataToSend.data;
-                    if(currentProtocol == "sctp"){
-                        ret = sctp_sendmsg(socketId, data, dataLen, NULL, 0, 0, 0, dataToSend.streamNum, 0, 0);
-                    } else if(currentProtocol == "tcp"){
+                    // if(currentProtocol == "sctp"){
+                    //     ret = sctp_sendmsg(socketId, data, dataLen, NULL, 0, 0, 0, dataToSend.streamNum, 0, 0);
+                    // } else if(currentProtocol == "tcp"){
+                    if(currentProtocol == "tcp"){
                         ret = write(socketId, data, dataLen);
                     } else if(currentProtocol == "uds"){
                         ret = write(socketId, data, dataLen);
@@ -1798,7 +1800,7 @@ void _AppsDisposalError(vnf::ConnId& connId, int reqObjId, void * requestObject,
 }
 
 std::string DB4NFV::SFC::NFs(){
-    std::string json = globals.sfc.toJson().toStyledString();
+    std::string json = globals.sfc.toJson().dump();
     if (globals.config.Debug){
         std::cout << "[DEBUG] Registered App Definitions:" << std::endl;
         std::cout << json << std::endl;

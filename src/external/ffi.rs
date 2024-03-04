@@ -1,25 +1,63 @@
+#[cxx::bridge]
+
+mod ffi {
+
+/*
+	This file serves as the api list exposed by DB4NFV in the form of FFI to C/C++.
+*/
+
+extern "Rust"{
+	/* DepositTransaction receives transaction parameters from Cpp.
+		This function is usually non-blocking when running; It just push the requested txns and return;
+		When the queue is full, namely waiting transactions reaching the bound of config::CONFIG.waiting_queue_size,
+			It will block until any slots becomes available to coordinate the traffic.
+	*/ 
+	fn deposit_transaction(a: String); 
+}
+
+/* 
+	Interface that needs to be implemented by C++ VNF runtime.
+	TODO.
+ */
+
+// #[namespace("your_namespace")] // Replace "your_namespace" with the actual namespace in your C++ code
+unsafe extern "C++" {
+    include!("DB4NFV/include/ffi.h"); // Include the path to your C++ header file
+	pub fn Init_SFC(argc: i32, argv: Vec<String>) -> String;
+	pub fn VNFThread(c: i32, v: Vec<String>);
+	pub fn execute_sa_udf(txnReqId_jni: u64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
+	pub fn txn_finished(txnReqId_jni: u64) -> i32;
+		
+}
+
+// #[derive(Deserialize)]
+// struct SFCTemplate{
+// 	txns: Vec<TxnTemplate>,
+// }
+
+// impl SFCTemplate {
+//     fn to_events(&self) -> Vec<ev::Event> {
+// 		self.txns.iter().flat_map(|txn| txn.events).collect()
+//     }
+// }
+
+// #[derive(Deserialize)]
+// struct TxnTemplate{
+// 	events: Vec<ev::Event>,
+// }
+
+}
+
 use std::mem;
 
-use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use crate::{config::CONFIG, ds::transactions::{Txn, TXN_TEMPLATES}};
- 
+
 #[derive(Deserialize)]
 pub struct TxnMessage {
 	pub type_idx:  u16,
 	pub ts: u64,
 	pub txn_req_id: u64
-}
-
-use libloading::{Library, library_filename, Symbol};
-
-static LIB: OnceCell<Library> = OnceCell::new();
-
-pub fn init(){
-	unsafe {
-		println!("Loading Dynamic Library from {}", CONFIG.read().unwrap().vnf_runtime_path);
-    	let _ = LIB.set(libloading::Library::new(CONFIG.read().unwrap().vnf_runtime_path.as_str()).unwrap());
-	}
 }
 
 fn deposit_transaction(a: String){
@@ -36,10 +74,12 @@ fn deposit_transaction(a: String){
 
 pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	// Call the unsafe extern function and receive the resulting JSON string
-	let json_string  = unsafe {
-        let func: libloading::Symbol<unsafe extern fn(i32, Vec<String>) -> String> = LIB.get().unwrap().get(b"Init_SFC").unwrap();
-    	func(argc, argv)
-    };
+	let json_string = 
+		ffi::Init_SFC(argc, argv);
+
+	if CONFIG.read().unwrap().debug_mode {
+		println!("{}", json_string);
+	}
 
     // Parse the JSON string into template.
 	let mut txns: Vec<Txn> = Txn::from_string(&json_string)
@@ -77,24 +117,14 @@ pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
 }
 
 pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
-	unsafe {
-        let func: libloading::Symbol<unsafe extern fn(i32, Vec<String>)> = LIB.get().unwrap().get(b"VNFThread").unwrap();
-    	func(c, v);
-    }
+	ffi::VNFThread(c, v)
 }
 
 pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
-	unsafe {
-    	let func: libloading::Symbol<unsafe extern fn(u64, i32, Vec<u8>, i32) -> String> = LIB.get().unwrap().get(b"execute_sa_udf").unwrap();
-		// TODO. Parse out res. Double return value.
-		(true, func(txn_req_id, sa_idx, value.bytes().collect(), param_count))
-    }
+	(true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count))
 }
 
 pub(crate) fn txn_finished_sign(txn_req_id: u64) -> i32 {
-	unsafe {
-    	let func: libloading::Symbol<unsafe extern fn(u64) -> i32> = LIB.get().unwrap().get(b"txn_finished").unwrap();
-		func(txn_req_id)
-    }
+	ffi::txn_finished(txn_req_id)
 }
 

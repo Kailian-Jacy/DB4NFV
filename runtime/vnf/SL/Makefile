@@ -1,9 +1,10 @@
-DEBUG=false
+DEBUG=true
 
 SL_KERNEL_STATIC=kernel-static
 SL_KERNEL_DYNAMIC=kernel-dynamic
 SL_KERNELBYPASS_STATIC=kernelbypass-static
 SL_KERNELBYPASS_DYNAMIC=kernelbypass-dynamic
+SL=SL
 
 CXX_FLAGS=-fpermissive -std=c++11 -Wno-write-strings -Wcomment -fPIC -Wno-pointer-arith
 ifeq ($(DEBUG),true)
@@ -76,6 +77,9 @@ $(SL_KERNEL_STATIC): sl.cpp
 
 $(SL_KERNEL_DYNAMIC): sl.cpp
 	g++ sl.cpp $(CXX_FLAGS) -shared $(JAVA_INCLUDE) -lvnf-kernel-dynamic -lpthread -lboost_system -ljsoncpp -o lib$(SL_KERNEL_DYNAMIC).so
+
+$(SL): sl.cpp
+	g++ sl.cpp $(CXX_FLAGS) -L./lib -ldb4nfv -lpthread -lboost_system -ljsoncpp -o $(SL).out
 
 clean:
 	rm -f *~ *.o *.log $(SL_KERNEL_STATIC) $(SL_KERNEL_DYNAMIC) $(SL_KERNELBYPASS_STATIC) $(SL_KERNELBYPASS_DYNAMIC)  log_*

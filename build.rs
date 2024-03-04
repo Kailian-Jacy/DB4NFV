@@ -1,21 +1,54 @@
+// use cxx_build::CFG;
+
 fn main() {
-    cxx_build::bridge("src/external/ffi.rs")  // returns a cc::Build
-        .file("runtime/src/core.cpp")
+    // Pre compile header file for rust interface.
+    cxx_build::bridge("src/external/ffi.rs").compile("morph-db-temp");  // returns a cc::Build
+    // Header saved to target/cxxbridge/DB4NFV/src/external/ffi.rs.h
+
+    // Compile vnf runtime with rust lib.
+    cc::Build::new()
+        .compiler("g++")
         .include("include/")
+        .include("../")
         .include("runtime/include/")
-        .flag_if_supported("-std=c++11")
-        .flag_if_supported("-Wno-deprecated-declarations")
-        .flag_if_supported("-Wno-pointer-arith" )
-        .flag_if_supported("-lnuma" )
-        .flag_if_supported("-lrt" )
-        .flag_if_supported("-DLIBVNF_STACK=1" )
-        .flag_if_supported("-ljsoncpp" )
-        .flag_if_supported("-g" )
-        .flag_if_supported("-O0")
-        // .flag_if_supported("-3")
+        .include("runtime/src/kernel/")
+        .include("target/cxxbridge/")
+        .flag("-std=c++11")
+        .flag("-Wno-deprecated-declarations")
+        .flag("-Wno-pointer-arith" )
+        .flag("-lnuma" )
+        // .flag("-lsctp" )
+        .flag("-lrt" )
+        .flag("-lpthread" )
+        .flag("-lboost-system" )
+        .flag("-DLIBVNF_STACK=1" )
+        // If debug.
+        .flag("-g" )
+        .flag("-O0")
+        // .flag("-O3")
+
+        // Runtime files.
+        .file("runtime/src/kernel/core.cpp")
+        .file("runtime/src/datastore/dspackethandler.cpp")
+        .file("runtime/src/datastore/utils.cpp")
+        // VNF app files.
+        .file("runtime/vnf/SL/sl.cpp")
+        // .shared_flag(true)
+        // .out_dir("./")
         .compile("morph-db");
 
-    println!("cargo:rerun-if-changed=src/external/ffi.rs");
-    println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
-    println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
+    // println!("cargo:rustc-link-lib=static=lib/");
+
+    // Compile your actual VNF instance.
+    // cc::Build::new()
+    //     .include("include/")
+    //     .include("runtime/include/")
+    //     .flag("-llib/vnf-kernel-static" )
+    //     .flag("-ljsoncpp" )
+    //     .out_dir("runtime/vnf/SL")
+    //     .compile("sl");
+        
+    // println!("cargo:rerun-if-changed=src/external/ffi.rs");
+    // println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
+    // println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
 }

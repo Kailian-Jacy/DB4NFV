@@ -46,10 +46,12 @@
 #include <chrono>
 #include <mutex>
 #include <boost/stacktrace.hpp>
-#include <jsoncpp/json/json.h>
+// #include <jsoncpp/json/json.h>
 
 #include "datastore/dspackethandler.hpp"
 #include "json.hpp"
+
+using json = nlohmann::json;
 
 #define LIBVNF_STACK_KERNEL 1
 #define LIBVNF_STACK_KERNEL_BYPASS 2
@@ -723,13 +725,14 @@ public:
           txnHandler_(txnHandler), rw_(rw), errorTxnHandler_(errTxnHandler),
           postTxnHandler_(postHandler) {}
 
-	Json::Value toJson() const {
-		Json::Value json;
+	json toJson() const
+	{
+		json json;
 		json["stateName"] = name_;
-		json["type"] = rw_ == 1? "read" : "write";
+		json["type"] = (rw_ == 1) ? "read" : "write";
 		json["fieldTableIndex"] = field_;
 		json["keyIndexInEvent"] = key_;
-		json["consistency_requirement"] =  "";
+		json["consistency_requirement"] = "";
 		return json;
 	}
 
@@ -765,13 +768,17 @@ public:
 	int txnIndex;
 	void Trigger(vnf::ConnId& connId, Context &ctx, const char *key, bool isAbort ) const;
 
-	Json::Value toJson() const {
-		Json::Value json;
-		// Contain series of sas.
-		Json::Value txnArray(Json::arrayValue);
-		for (const auto& sa : sas){
-			txnArray.append(sa.toJson());
+	json toJson() const
+	{
+		json json;
+		// Create an array to contain series of sas.
+		auto txnArray = json::array();
+		// Iterate through sas and append their JSON representations to the array.
+		for (const auto &sa : sas)
+		{
+			txnArray.push_back(sa.toJson());
 		}
+		// Add the array of StateAccesses to the main JSON object.
 		json["StateAccesses"] = txnArray;
 		return json;
 	}
@@ -793,18 +800,19 @@ public:
         reqObjSize(reqObjSize)
 	{};
 
-	Json::Value toJson() const {
-		Json::Value json;
-		// Contain series of transactions.
-		Json::Value txnArray(Json::arrayValue);
-		for (const auto& txn : Txns){
-			txnArray.append(txn.toJson());
-		}
+	json toJson() const
+	{
+		json json;
+		// Array of transaction objects
 		json["name"] = name;
-		json["transactions"] = txnArray;
+		json["transactions"] = json::array();
+		for (const auto &txn : Txns)
+		{
+			json["transactions"].push_back(txn.toJson());
+		}
 		return json;
 	}
-	
+
 	const AcceptHandler acceptHandler = nullptr;
 	const ReadHandler   readHandler = nullptr;
 	const ErrorHandler  errorHandler = nullptr;
@@ -842,14 +850,15 @@ public:
 	// Report SFC apps to txnEngine.
 	std::string NFs();
 
-	Json::Value toJson() const {
-		Json::Value json;
-		// Contain series of transactions.
-		Json::Value txnArray(Json::arrayValue);
-		for (const auto& app : SFC_chain){
-			txnArray.append(app->toJson());
+	json toJson() const
+	{
+		json json;
+		// Array of transaction objects
+		json["app"] = json::array();
+		for (const auto &obj : SFC_chain)
+		{
+			json["app"].push_back((*obj).toJson());
 		}
-		json["apps"] = txnArray;
 		return json;
 	}
 
