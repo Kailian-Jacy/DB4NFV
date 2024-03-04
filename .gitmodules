@@ -1,0 +1,4 @@
+[submodule "runtime"]
+	path = runtime
+	url = https://github.com/Kailian-Jacy/runtime_libVNF
+	branch = db4nfv_rust
