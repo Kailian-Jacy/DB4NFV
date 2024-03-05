@@ -42,9 +42,10 @@ impl Txn {
             // Record write field in all_writes
             all_writes.insert(event.write.clone(), ());
             // Check for duplicate writes
-            if all_writes.get(&event.write).is_some() {
-                panic!("Duplicate writes detected for key: {}", event.write);
-            }
+            // if all_writes.get(&event.write).is_some() {
+            //     panic!("Duplicate writes detected for key: {}", event.write);
+            // }
+            // Write check is delayed to runtime.
 		});
 
         all_reads.dedup();

@@ -27,7 +27,6 @@ unsafe extern "C++" {
 	pub fn VNFThread(c: i32, v: Vec<String>);
 	pub fn execute_sa_udf(txnReqId_jni: u64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
 	pub fn txn_finished(txnReqId_jni: u64) -> i32;
-		
 }
 
 // #[derive(Deserialize)]
@@ -50,8 +49,59 @@ unsafe extern "C++" {
 
 use std::mem;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use crate::{config::CONFIG, ds::transactions::{Txn, TXN_TEMPLATES}};
+use crate::ds::events as ev;
+
+// {
+// 	"app": [{
+// 		"name": "SLApp",
+// 		"transactions": [{
+// 			"StateAccesses": [{
+// 				"consistency_requirement": "",
+// 				"has_write": true,
+// 				"reads": ["balance"],
+// 				"stateName": "deposit_sa",
+// 				"write": "balance"
+// 			}]
+// 		}, {
+// 			"StateAccesses": [{
+// 				"consistency_requirement": "",
+// 				"has_write": true,
+// 				"reads": ["balance"],
+// 				"stateName": "src_transfer_sa",
+// 				"write": "balance"
+// 			}, {
+// 				"consistency_requirement": "",
+// 				"has_write": true,
+// 				"reads": ["balance"],
+// 				"stateName": "dst_transfer_sa",
+// 				"write": "balance"
+// 			}]
+// 		}]
+// 	}]
+// }
+
+// Define the intermediate struct for parsing
+#[derive(Debug, Deserialize, Serialize)]
+struct AppData {
+    #[serde(rename = "app")]
+    app: Vec<AppInfo>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AppInfo {
+    name: String,
+    #[serde(rename = "transactions")]
+    transactions: Vec<TransactionData>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TransactionData {
+    #[serde(rename = "StateAccesses")]
+    state_accesses: Vec<ev::Event>,
+}
+
 
 #[derive(Deserialize)]
 pub struct TxnMessage {
@@ -75,15 +125,26 @@ fn deposit_transaction(a: String){
 pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	// Call the unsafe extern function and receive the resulting JSON string
 	let json_string = 
-		unsafe {ffi::Init_SFC(argc, argv)};
+		ffi::Init_SFC(argc, argv);
 
 	if CONFIG.read().unwrap().debug_mode {
 		println!("{}", json_string);
 	}
 
-    // Parse the JSON string into template.
-	let mut txns: Vec<Txn> = Txn::from_string(&json_string)
-		.expect("Error parsing transmitted txn template");
+	let apps = serde_json::from_str::<AppData>(&json_string)
+		.unwrap();
+
+	// Convert the intermediate struct into the final Txn struct
+    let mut txns: Vec<Txn> = Vec::new();
+    for app_info in apps.app {
+        for transaction_data in app_info.transactions {
+            let txn = Txn {
+                es: transaction_data.state_accesses,
+                all_reads_length: 0,
+            };
+            txns.push(txn);
+        }
+    }
 
 	let all_txn_templates = txns.iter_mut().map(|txn|{
         txn.process_txn();
@@ -117,14 +178,14 @@ pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
 }
 
 pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
-	unsafe{ffi::VNFThread(c, v)}
+	ffi::VNFThread(c, v)
 }
 
 pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
-	(true, unsafe { ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count) })
+	(true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count))
 }
 
 pub(crate) fn txn_finished_sign(txn_req_id: u64) -> i32 {
-	unsafe { ffi::txn_finished(txn_req_id) }
+	ffi::txn_finished(txn_req_id)
 }
 

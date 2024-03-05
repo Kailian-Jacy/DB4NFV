@@ -37,18 +37,9 @@ fn main() {
         // .out_dir("./")
         .compile("morph-db");
 
-    // println!("cargo:rustc-link-lib=static=lib/");
-
-    // Compile your actual VNF instance.
-    // cc::Build::new()
-    //     .include("include/")
-    //     .include("runtime/include/")
-    //     .flag("-llib/vnf-kernel-static" )
-    //     .flag("-ljsoncpp" )
-    //     .out_dir("runtime/vnf/SL")
-    //     .compile("sl");
-        
-    // println!("cargo:rerun-if-changed=src/external/ffi.rs");
-    // println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
-    // println!("cargo:rerun-if-changed=runtime/src/kernel/*.cpp");
+    println!("cargo:rerun-if-changed=include/ffi.h");
+    println!("cargo:rerun-if-changed=runtime/core.hpp");
+    println!("cargo:rerun-if-changed=runtime/src/kernel/core.cpp");
+    println!("cargo:rerun-if-changed=runtime/src/kernel/utils.hpp");
+    println!("cargo:rerun-if-changed=runtime/vnf/SL/sl.cpp");
 }

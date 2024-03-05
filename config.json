@@ -1,0 +1,10 @@
+{
+  "vnf_threads_num": 3,
+  "worker_threads_num": 3,
+  "waiting_queue_size": 4096,
+  "transaction_out_of_order_time_ns": 100,
+  "ringbuffer_size": 10000,
+  "ringbuffer_full_to_panic": false,
+  "transaction_pooling_size": 10000,
+  "debug_mode": false
+}

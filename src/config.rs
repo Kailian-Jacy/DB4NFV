@@ -11,7 +11,7 @@ use std::sync::RwLock;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Define VNF thread nums.
-    pub vnf_threads_num: u16,
+    pub vnf_threads_num: u16, // Deprecated. Defined in VNF config.
     // Define your configuration fields here
     pub worker_threads_num: u16,
     // Waiting queue uses a cyclic buffer. This defines the size.
@@ -26,8 +26,6 @@ pub struct Config {
     pub transaction_pooling_size: usize,
     // Debug mode enables verbose output.
     pub debug_mode: bool,
-    // Dynamically linked library full path.
-    pub vnf_runtime_path: String,
 }
 
 lazy_static! {
@@ -37,15 +35,14 @@ lazy_static! {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            vnf_threads_num: 8,
-            worker_threads_num: 8,
+            vnf_threads_num: 3,
+            worker_threads_num: 3,
             waiting_queue_size: 4096,
             transaction_out_of_order_time_ns: 100,
             ringbuffer_size: 10000,
             ringbuffer_full_to_panic: false,
             transaction_pooling_size: 10000,
             debug_mode: false,
-            vnf_runtime_path: String::from("./runtime/vnf/SL/libkernel-dynamic.so")
         }
     }
 }
@@ -96,10 +93,10 @@ pub fn init(file_path: PathBuf) {
     fast_log::init(fast_log::Config::new().console().chan_len(Some(100000))).unwrap();
 
     let core_ids = core_affinity::get_core_ids().unwrap();
-    if core_ids.len() as u16 > 
-        CONFIG.read().unwrap().worker_threads_num + 
+    if  CONFIG.read().unwrap().worker_threads_num + 
         CONFIG.read().unwrap().vnf_threads_num + // Vnf threads.
-        1 // Main or construction thread.
+        1 > // Main or construction thread. 
+        core_ids.len() as u16
     {
         panic!("No sufficient cores for pointed thread nums. Total {:?}", core_ids.len());
     }

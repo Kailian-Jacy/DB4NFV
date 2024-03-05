@@ -21,6 +21,7 @@ use worker::{
     worker_threads::execute_thread,
     construct_thread::construct_thread,
 };
+use rayon::prelude::*;
 
 fn main() {
     // Parse command line arguments
@@ -51,33 +52,32 @@ fn main() {
     /*
         Spawn Vnf threads and bind to core.
      */
-    let vnf_guards = (1..=config::CONFIG.read().unwrap().vnf_threads_num).map(|tid| 
+    let vnf_guard = 
         thread::spawn(move || {
-            utils::bind_to_cpu_core(tid as usize);
+            // VNF thread bind in runtime.
             ffi::vnf_thread(0, Vec::new());
-        }));
+    });
 
     /*
         Spawn TSPE worker threads and bind to core.
      */
     let worker_thread_ends = config::CONFIG.read().unwrap().worker_threads_num
         + config::CONFIG.read().unwrap().vnf_threads_num + 1;
-    let guards = (config::CONFIG.read().unwrap().vnf_threads_num + 1..worker_thread_ends).map(|tid| {
-        thread::spawn(move || {
-            utils::bind_to_cpu_core(tid as usize);
-            execute_thread(tid as usize)
-        })
-    });
+    let guards: Vec<_> = (config::CONFIG.read().unwrap().vnf_threads_num + 1..worker_thread_ends)
+        .into_par_iter().map(|tid| {
+            thread::spawn(move || {
+                // utils::bind_to_cpu_core(tid as usize);
+                execute_thread(tid as usize)
+            })
+    }).collect();
 
     // Main thread work as construct thread.
     construct_thread(-1);
 
-    for guard in vnf_guards {
-        guard.join().unwrap();
-    };
     for guard in guards {
         guard.join().unwrap();
     };
+    vnf_guard.join().unwrap();
 
     // TODO: Graceful shutdown.
 }
