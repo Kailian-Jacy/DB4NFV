@@ -21,7 +21,7 @@ pub struct RingBuf<T: RingBufContent> {
 
 impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
-	pub fn last(&self) -> usize {
+	pub fn end(&self) -> usize {
 		self.end.load() - 1
 	}
 	#[inline]
@@ -96,20 +96,16 @@ impl<T: RingBufContent> RingBuf<T> {
 	    }
 	}
 	// Search back. Used when dating back to last valid version of state.
-	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, from_idx: usize) -> Option<RwLock<T>> {
-		if from_idx < 0 { None }
-		else {
-			loop {
-				if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
-					// Found.
-					self.buf[(self.start() + from_idx) % self.cap]
-				} else {
-					// Not found
-					if from_idx == 0 { return None }
-					from_idx = from_idx - 1;
-				}
+	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
+		loop {
+			if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
+				// Found.
+				return Some(&self.buf[(self.start() + from_idx) % self.cap])
+			} else {
+				// Not found
+				if from_idx == 0 { return None }
+				from_idx = from_idx - 1;
 			}
-			None
 		}
 	}
 	// Truncate from the tail.

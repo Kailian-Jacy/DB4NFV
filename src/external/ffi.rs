@@ -104,15 +104,15 @@ struct TransactionData {
 }
 
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct TxnMessage {
 	pub type_idx:  u16,
 	pub ts: u64,
 	pub txn_req_id: u64,
 	// When transaction created, they pointes the column to read; Here in runtime, they point out which row to read.
 	// indexes are displayed in vector for each event.
-	pub reads_idx: vec<vec<usize>>,
-	pub write_idx: vec<usize> 
+	pub reads_idx: Vec<Vec<usize>>,
+	pub write_idx: Vec<usize> 
 }
 
 pub fn deposit_transaction(a: String){

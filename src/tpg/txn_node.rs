@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
@@ -61,7 +62,7 @@ impl TxnNode{
 	/*
 		Construct TxnNode from message and template.
 	 */
-	pub fn from_message(msg: TxnMessage) -> Option<Arc<Self>> {
+	pub fn from_message(mut msg: TxnMessage) -> Option<Arc<Self>> {
 		let tpl = &TXN_TEMPLATES.get().unwrap()[msg.type_idx as usize];
 		// TODO. Allocate from manager.
 		let ta = Arc::new(TxnNode{
@@ -84,17 +85,20 @@ impl TxnNode{
 		if msg.reads_idx.len() < tpl.es.len() || msg.write_idx.len() < tpl.es.len() {
 			return None
 		}
-		let ev_nodes: Vec<Arc<EvNode>> = tpl.es.iter().enumerate()
-			.map(|(idx, en)| Arc::new(
-				EvNode::from_template(
-					en,
-					idx as i32,
-					Arc::downgrade(&ta.clone()),
-					msg.reads_idx[idx],
-					msg.write_idx[idx],
-				)?
-			))
-			.collect();
+		let mut ev_nodes = Vec::new();
+		for (idx, en) in tpl.es.iter().enumerate() {
+			ev_nodes.push(
+				Arc::new(
+					EvNode::from_template(
+						en,
+						idx as i32,
+						Arc::downgrade(&ta.clone()),
+						mem::take(&mut msg.reads_idx[idx]),
+						msg.write_idx[idx],
+					)?
+				)
+			)
+		}
 		let mut ev_nodes_place = ta.ev_nodes.write();
 		*ev_nodes_place = ev_nodes;
 		drop(ev_nodes_place);

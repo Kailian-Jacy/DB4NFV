@@ -40,14 +40,24 @@ pub fn construct_thread(_: i16){
 					}
 				},
 			};
-			let mut op_tn = TxnNode::from_message(new_txn_msg);
-			if op_tn.is_none(){
-				ffi::txn_finished_sign(new_txn_msg.txn_req_id); // TODO. Inform illegal.
-				if CONFIG.read().unwrap().debug_mode {
-					println!("[DEBUG] invalid txn msg: {}", new_txn_msg);
+			if CONFIG.read().unwrap().debug_mode {
+				let op_tn = TxnNode::from_message(new_txn_msg.clone());
+				if op_tn.is_none(){
+					ffi::txn_finished_sign(new_txn_msg.txn_req_id); // TODO. Inform illegal.
+						println!("[DEBUG] invalid txn msg: {:?}", new_txn_msg);
+					continue
+				} else {
+					tn = op_tn.unwrap();
 				}
 			} else {
-				tn = op_tn.unwrap();
+				let req = new_txn_msg.txn_req_id;
+				let op_tn = TxnNode::from_message(new_txn_msg);
+				if op_tn.is_none(){
+					ffi::txn_finished_sign(req);
+					continue
+				} else {
+					tn = op_tn.unwrap();
+				}
 			}
 			// Wait until timeout and mark as ready.
 			// if (utils::current_time_ns() - tn.body.ts) < timeout_margin {

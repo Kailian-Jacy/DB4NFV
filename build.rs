@@ -38,8 +38,5 @@ fn main() {
         .compile("morph-db");
 
     println!("cargo:rerun-if-changed=include/ffi.h");
-    println!("cargo:rerun-if-changed=runtime/core.hpp");
-    println!("cargo:rerun-if-changed=runtime/src/kernel/core.cpp");
-    println!("cargo:rerun-if-changed=runtime/src/kernel/utils.hpp");
-    println!("cargo:rerun-if-changed=runtime/vnf/SL/sl.cpp");
+    println!("cargo:rerun-if-changed=runtime");
 }

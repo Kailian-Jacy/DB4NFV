@@ -84,9 +84,9 @@ impl Table {
 		let mut records = Vec::<ringbuf::RingBuf<DataPoint<String>>>::new();
 		let states_per_key = CONFIG.read().unwrap().max_state_records;
 		keys.iter().enumerate().for_each(|(i, &k)|  {
-			for j in states_per_key {
+			for j in (0..states_per_key).into_iter() {
 				// For each key, we have states_per_key rows. each contains a series of time stamp.
-				states.insert(format!("{}_{}", key, j), i * states_per_key + j);
+				states.insert(format!("{}_{}", k, j), i * states_per_key + j);
 				records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
 			}
 		});

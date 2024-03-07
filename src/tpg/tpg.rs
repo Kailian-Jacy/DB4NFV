@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use once_cell::sync::OnceCell;
 
+use crate::config::CONFIG;
+
 use super::{
 	txn_node::TxnNode,
 	ev_node::EvNode,
@@ -24,8 +26,8 @@ impl Tpg{
     pub fn new(keys: Vec<&str>) -> Self {
 		let mut state_map = HashMap::<String, Option::<(Weak<EvNode>,Arc<TxnNode>)>>::new();
 		keys.iter().for_each(
-			|&k| (0..CONFIG.read().unwrap().max).into_iter().for_each(
-				|j| state_map.insert(format!("{}_{}", key, j), None) 
+			|&k| (0..CONFIG.read().unwrap().max_state_records).into_iter().for_each(
+				|j| {state_map.insert(format!("{}_{}", k, j), None);}
 			)
 		);
 
