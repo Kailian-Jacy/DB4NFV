@@ -76,7 +76,7 @@ pub enum EventStatus{
 
 impl EvNode {
 	// Only used to create node from template.
-	pub(in crate::tpg) fn from_template(event: &Event, idx: i32, txn: Weak<TxnNode>) -> Self {
+	pub(in crate::tpg) fn from_template(event: &Event, idx: i32, txn: Weak<TxnNode>, reads_idx: Vec<usize>, write_idx: usize) -> Option<Self> {
 		// Template
 		let reads_length = event.reads.len();
         
@@ -89,19 +89,25 @@ impl EvNode {
             .take(reads_length)
             .collect();
 
-        EvNode {
-            read_from,
-            read_by: RwLock::new(Vec::new()),
-            txn,
-            status: AtomicCell::new(EventStatus::CONSTRUCT),
-            is_read_from_fulfilled,
-            reads: event.reads.clone(),
-            write: event.write.clone(),
+		if reads_idx.len() < event.reads.len() {
+			None
+		} else {
+			Some(EvNode {
+				read_from,
+				read_by: RwLock::new(Vec::new()),
+				txn,
+				status: AtomicCell::new(EventStatus::CONSTRUCT),
+				is_read_from_fulfilled,
+				reads: event.reads
+					.iter().enumerate()
+					.map(|(idx, k)| format!("{}_{}", k, reads_idx[idx])).collect(),
+				write: format!("{}_{}", event.write.clone(), write_idx),
 
-            idx,
-            has_write: event.has_write,
-            has_storage_slot: false,
-        }
+				idx,
+				has_write: event.has_write,
+				has_storage_slot: false,
+			})
+		}
 	}
 
 	pub fn ready(&self) -> bool{

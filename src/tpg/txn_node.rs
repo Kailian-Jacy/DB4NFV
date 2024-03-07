@@ -61,7 +61,7 @@ impl TxnNode{
 	/*
 		Construct TxnNode from message and template.
 	 */
-	pub fn from_message(msg: TxnMessage) -> Arc<Self> {
+	pub fn from_message(msg: TxnMessage) -> Option<Arc<Self>> {
 		let tpl = &TXN_TEMPLATES.get().unwrap()[msg.type_idx as usize];
 		// TODO. Allocate from manager.
 		let ta = Arc::new(TxnNode{
@@ -81,19 +81,24 @@ impl TxnNode{
 				uncommitted_parents: AtomicCell::new(0),
 				unfinished_events: AtomicCell::new(0),
 			});
+		if msg.reads_idx.len() < tpl.es.len() || msg.write_idx.len() < tpl.es.len() {
+			return None
+		}
 		let ev_nodes: Vec<Arc<EvNode>> = tpl.es.iter().enumerate()
 			.map(|(idx, en)| Arc::new(
 				EvNode::from_template(
 					en,
 					idx as i32,
 					Arc::downgrade(&ta.clone()),
-				)
+					msg.reads_idx[idx],
+					msg.write_idx[idx],
+				)?
 			))
 			.collect();
 		let mut ev_nodes_place = ta.ev_nodes.write();
 		*ev_nodes_place = ev_nodes;
 		drop(ev_nodes_place);
-		ta
+		Some(ta)
 	}
 
 	// set links on tpg for eventNodes. This function is dangerous.
@@ -241,6 +246,7 @@ impl TxnNode{
 		});
 
 		// Inform the runtime that the txn has been processed.
+		// TODO. Judge by self.status to reply ILLEGAL, SUCCESS, or what.
 		ffi::txn_finished_sign(self.txn_req_id);
 
 		true

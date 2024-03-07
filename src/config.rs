@@ -24,6 +24,8 @@ pub struct Config {
     pub ringbuffer_full_to_panic: bool,
     // Transaction Pooling Size.
     pub transaction_pooling_size: usize,
+    // Max state record size.
+    pub max_state_records: usize,
     // Debug mode enables verbose output.
     pub debug_mode: bool,
 }
@@ -40,6 +42,7 @@ impl Default for Config {
             waiting_queue_size: 4096,
             transaction_out_of_order_time_ns: 100,
             ringbuffer_size: 10000,
+            max_state_records: 10000,
             ringbuffer_full_to_panic: false,
             transaction_pooling_size: 10000,
             debug_mode: false,

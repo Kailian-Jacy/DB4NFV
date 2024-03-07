@@ -49,6 +49,7 @@ unsafe extern "C++" {
 
 use std::mem;
 
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use crate::{config::CONFIG, ds::transactions::{Txn, TXN_TEMPLATES}};
 use crate::ds::events as ev;
@@ -107,20 +108,25 @@ struct TransactionData {
 pub struct TxnMessage {
 	pub type_idx:  u16,
 	pub ts: u64,
-	pub txn_req_id: u64
+	pub txn_req_id: u64,
+	// When transaction created, they pointes the column to read; Here in runtime, they point out which row to read.
+	// indexes are displayed in vector for each event.
+	pub reads_idx: vec<vec<usize>>,
+	pub write_idx: vec<usize> 
 }
 
-fn deposit_transaction(a: String){
+pub fn deposit_transaction(a: String){
 	let msg: TxnMessage = serde_json::from_str(a.as_str()).unwrap();
 	if !msg.type_idx as usize >= TXN_TEMPLATES.get().unwrap().len() {
 		// Err(String::from("required index invalid."))
-		panic!("required index invalid.");
+		panic!("required index out of range.");
 	};
 	match super::pipe::PIPE_IN.get().unwrap().send(msg){
 		Ok(_) => (),
 		Err(e) => println!("Error sending message to pipe: {}", e),
 	}
 }
+
 
 pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	// Call the unsafe extern function and receive the resulting JSON string
@@ -185,6 +191,7 @@ pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_c
 	(true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count))
 }
 
+// TODO. Return result. ILLEGAL, SUCCESS, ABORTED.
 pub(crate) fn txn_finished_sign(txn_req_id: u64) -> i32 {
 	ffi::txn_finished(txn_req_id)
 }

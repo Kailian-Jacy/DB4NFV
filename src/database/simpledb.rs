@@ -82,9 +82,13 @@ impl Table {
 	fn empty_init(keys: Vec<&str>) -> Self {
 		let mut states = HashMap::new();
 		let mut records = Vec::<ringbuf::RingBuf<DataPoint<String>>>::new();
-		keys.iter().enumerate().for_each(|(idx, &k)| {
-		    states.insert(String::from(k), idx);
-			records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
+		let states_per_key = CONFIG.read().unwrap().max_state_records;
+		keys.iter().enumerate().for_each(|(i, &k)|  {
+			for j in states_per_key {
+				// For each key, we have states_per_key rows. each contains a series of time stamp.
+				states.insert(format!("{}_{}", key, j), i * states_per_key + j);
+				records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
+			}
 		});
 		Table{
 			states: states,

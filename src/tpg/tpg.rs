@@ -1,3 +1,5 @@
+use std::hash::Hash;
+use std::os::linux::raw::stat;
 use std::sync::{mpsc::*, Arc, Mutex, RwLock, Weak};
 use std::sync::mpsc::Receiver;
 use std::collections::HashMap;
@@ -19,12 +21,19 @@ pub struct Tpg{
 }
 
 impl Tpg{
-    pub fn new(v: Vec<&str>) -> Self {
+    pub fn new(keys: Vec<&str>) -> Self {
+		let mut state_map = HashMap::<String, Option::<(Weak<EvNode>,Arc<TxnNode>)>>::new();
+		keys.iter().for_each(
+			|&k| (0..CONFIG.read().unwrap().max).into_iter().for_each(
+				|j| state_map.insert(format!("{}_{}", key, j), None) 
+			)
+		);
+
 		let (tx, rx) = channel();
 		Tpg{
 			ready_queue_in: tx,
 			ready_queue_out: Mutex::new(rx),
-			state_last_modify: RwLock::new(v.iter().map(|&s| {(String::from(s), None)}).collect()),
+			state_last_modify: RwLock::new(state_map),
 		}
 	}
 }
