@@ -7,7 +7,7 @@ use crossbeam::atomic::AtomicCell;
 	Design of RingBuf:
 	Target:
 	- Thread safe when properly used.
-	- High performance.
+	- High performance. From cache alignment and lockless.
  */
 pub struct RingBuf<T: RingBufContent> {
 	pub cap: usize,
@@ -21,8 +21,8 @@ pub struct RingBuf<T: RingBufContent> {
 
 impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
-	pub fn end(&self) -> usize {
-		self.end.load()
+	pub fn last(&self) -> usize {
+		self.end.load() - 1
 	}
 	#[inline]
 	pub fn start(&self) -> usize {
@@ -95,6 +95,23 @@ impl<T: RingBufContent> RingBuf<T> {
 			Some(self.buf[self.start() + idx].read().unwrap().clone())
 	    }
 	}
+	// Search back. Used when dating back to last valid version of state.
+	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, from_idx: usize) -> Option<RwLock<T>> {
+		if from_idx < 0 { None }
+		else {
+			loop {
+				if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
+					// Found.
+					self.buf[(self.start() + from_idx) % self.cap]
+				} else {
+					// Not found
+					if from_idx == 0 { return None }
+					from_idx = from_idx - 1;
+				}
+			}
+			None
+		}
+	}
 	// Truncate from the tail.
 	pub fn truncate_from(&self, index: usize) {
 		debug_assert!(index < self.len() as usize);
@@ -116,11 +133,6 @@ impl<T: RingBufContent> RingBuf<T> {
 	}
 	#[inline]
 	pub fn object_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
-	{
-		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
-	}
-	#[inline]
-	pub fn find_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<T> 
 	{
 		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
 	}
