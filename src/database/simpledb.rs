@@ -24,11 +24,11 @@ impl api::Database for SimpleDB {
 		self.tables[table].reset_version(key, ts);	
     }
 
-	fn write_version(&self, table: &str, key: &str, ts: u64, value: &String) {
+	fn write_version(&self, table: &str, key: &str, ts: u64, value: &Vec<u8>) {
 		self.tables[table].write_version(key, ts, value);	
     }
 
-	fn push_version(&self, table: &str, key: &str, ts: u64, value: &String) {
+	fn push_version(&self, table: &str, key: &str, ts: u64, value: &Vec<u8>) {
 		self.tables[table].push_version(key, ts, value);	
     }
 
@@ -40,7 +40,7 @@ impl api::Database for SimpleDB {
 		self.tables[table].release_version(key, ts);	
     }
 
-	fn get_version(&self, table: &str, key: &str, ts: u64) -> String {
+	fn get_version(&self, table: &str, key: &str, ts: u64) -> Vec<u8> {
 		self.tables[table].get_version(key, ts)
     }
 
@@ -49,7 +49,7 @@ impl api::Database for SimpleDB {
 struct Table {
 	states: HashMap<String, usize>,
 	// records: HashMap<String, Vec<DataPoint<String>>>,
-	records: Vec<ringbuf::RingBuf<DataPoint<String>>>,
+	records: Vec<ringbuf::RingBuf<DataPoint<Vec<u8>>>>,
 }
 
 #[derive(Default, Clone)]
@@ -80,7 +80,7 @@ impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {}
 impl Table {
 	fn empty_init(keys: Vec<&str>) -> Self {
 		let mut states = HashMap::new();
-		let mut records = Vec::<ringbuf::RingBuf<DataPoint<String>>>::new();
+		let mut records = Vec::<ringbuf::RingBuf<DataPoint<Vec<u8>>>>::new();
 		let states_per_key = CONFIG.read().unwrap().max_state_records;
 		keys.iter().enumerate().for_each(|(i, &k)|  {
 			for j in (0..states_per_key).into_iter() {
@@ -101,7 +101,7 @@ impl Table {
 	// This only called on obj with normal states.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
 		// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!({
 			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
@@ -113,7 +113,7 @@ impl Table {
 	// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
 		debug_assert!({
 			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
 		});
@@ -121,12 +121,12 @@ impl Table {
 	}
 
 	// Stage version inserts the version at the end. The t is guaranteed to be the last version.
-	fn push_version(&self, key: &str, ts: u64, value: &str) {
+	fn push_version(&self, key: &str, ts: u64, value: &Vec<u8>) {
 		// Insert dataPoint into vectors. Keep correct order.
 		debug_assert!(self.states.contains_key(key));
 		debug_assert!({
 			let obj = self.records[self.states[key]]
-				.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+				.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
 			obj.is_none() || obj.unwrap().state != DataPointState::ABORTED
 		});
 		debug_assert!({
@@ -139,18 +139,18 @@ impl Table {
 		// Create a new DataPoint with the provided timestamp and value.
 		let new_data_point = DataPoint {
 			ts: ts,
-			value: value.to_string(),
+			value: value.clone(),
 			state: DataPointState::NORMAL,
 		};
 		self.records[self.states[key]].push(new_data_point);
 	}
 
 	// Stage version inserts the version at in the middle. We find it first.
-	fn write_version(&self, key: &str, ts: u64, value: &str) {
+	fn write_version(&self, key: &str, ts: u64, value: &Vec<u8>) {
 		// Insert dataPoint into vectors. Keep correct order.
 		debug_assert!(self.states.contains_key(key));
 		let obj_ref = self.records[self.states[key]]
-			.ref_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)));
+			.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
 		debug_assert!({
 			obj_ref.unwrap().1
 				.read().unwrap()
@@ -159,11 +159,11 @@ impl Table {
 		// Create a new DataPoint with the provided timestamp and value.
 		let new_data_point = DataPoint {
 			ts: ts,
-			value: value.to_string(),
+			value: value.clone(),
 			state: DataPointState::NORMAL,
 		};
 		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
-		obj_ref.unwrap().1.write().unwrap().value = String::from(value);
+		obj_ref.unwrap().1.write().unwrap().value = value.clone();
 		// TODO: Search back.
 	}
 
@@ -174,11 +174,11 @@ impl Table {
 		self.records[self.states[key]].discard_before(1);
 	}
 
-	fn get_version(&self, key: &str, ts: u64) -> String{
+	fn get_version(&self, key: &str, ts: u64) -> Vec<u8>{
 		// Get datapoint from ringbuf.
 		debug_assert!(self.states.contains_key(key));
 		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(move |dp: &DataPoint<String>| dp.ts.cmp(&ts)))
+			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)))
 			.unwrap(); // Shoud not be none.
 		debug_assert!(obj.state == DataPointState::NORMAL);
 		obj.value.clone()

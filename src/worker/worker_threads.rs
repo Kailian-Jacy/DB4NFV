@@ -54,7 +54,8 @@ pub fn execute_thread(tid: usize){
 				|(idx, r)| {
 					if evn.read_from[idx].read().is_none() {
 						// TODO: Router to default value.
-						String::from("")
+						let zero_byte = '0' as u8;
+						vec![zero_byte]
 					} else {
 						let ts = (*evn.read_from[idx].read()).as_ref().unwrap().upgrade().unwrap()
 							.txn.upgrade().unwrap()
@@ -66,19 +67,23 @@ pub fn execute_thread(tid: usize){
 			).collect();
 
 		// Call the Cpp execution func.
-		let (res, v) = evn.execute(&values, values.len() as i32);
+		let (abortion, v) = evn.execute(&values, values.len() as i32);
 		/*
 			Re-check the status here again. Abortion could have happended between last check and now.
 			Swap out, check it, and put it back.
 		 */
 		 // TODO.
-		if res && evn.status.swap(EventStatus::ABORTED) == EventStatus::WAITING {
+		if (!abortion) && evn.status.swap(EventStatus::ABORTED) == EventStatus::WAITING {
 			evn.accepted();
 			evn.write_back(&v, DB.get().unwrap());
 			evn_option = evn.get_next_option_push_others_ready(&TPG.get().unwrap().ready_queue_in);
 			evn_option.as_ref().unwrap().status.store(EventStatus::CLAIMED);
 			continue;
 		} else {
+			if !abortion {
+				// Swapped non-waiting state.
+				println!("Rare condition: operation switch to abortion when execution.")
+			}
 			evn.notify_txn_abort();
 		}
 	}

@@ -25,7 +25,7 @@ unsafe extern "C++" {
     include!("DB4NFV/include/ffi.h"); // Include the path to your C++ header file
 	pub fn Init_SFC(argc: i32, argv: Vec<String>) -> String;
 	pub fn VNFThread(c: i32, v: Vec<String>);
-	pub fn execute_sa_udf(txnReqId_jni: u64, saIdx: i32, value: Vec<u8>, param_count: i32) -> String;
+	pub fn execute_sa_udf(txnReqId_jni: u64, saIdx: i32, value: Vec<u8>, param_count: i32) -> Vec<u8>;
 	pub fn txn_finished(txnReqId_jni: u64) -> i32;
 }
 
@@ -189,8 +189,22 @@ pub(crate) fn vnf_thread(c: i32, v: Vec<String>) {
 	ffi::VNFThread(c, v)
 }
 
-pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: String, param_count: i32) -> (bool, String) {
-	(true, ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count))
+// Return result and abortion sign. If abortion  required, the first bool is true.
+pub(crate) fn execute_event(txn_req_id: u64, sa_idx: i32, value: Vec<u8>, param_count: i32) -> (bool, Vec<u8>) {
+	let res = ffi::execute_sa_udf(txn_req_id, sa_idx, value.into(), param_count);
+	/* Res should be composed of:
+		- Result to be written back. Here it's an int.
+		- Abortion. Another int.
+	*/ 
+    // Parse the integers from the string
+	let abortion = u32::from_le_bytes([
+        res[0],
+        res[1],
+        res[2],
+        res[3],
+    ]);
+
+	(abortion == 1, res[4..].to_vec())
 }
 
 // TODO. Return result. ILLEGAL, SUCCESS, ABORTED.

@@ -117,7 +117,7 @@ impl EvNode {
 			EventStatus::WAITING | EventStatus::INQUEUE => {},
 			_ => {return false},
 		} 
-		self.no_waiting() 
+		self.no_waiting()
 	}
 
 	// Nobody is waiting. May used before enqueue, since state is CONSTRUCT.
@@ -126,11 +126,18 @@ impl EvNode {
 	}
 
 	// Wrapper. Calling execution handler.
-	pub fn execute(&self, values: &Vec<String>, cnt: i32) -> (bool, String) {
-		let value = values
-			.join(";");
+	pub fn execute(&self, values: &Vec<Vec<u8>>, cnt: i32) -> (bool, Vec<u8>) {
+		let mut value = Vec::new();
+
+		for (i, vec) in values.iter().enumerate() {
+			if i != 0 {
+				value.push(b';'); // Push the semicolon separator if not the first vector
+			}
+			value.extend_from_slice(vec); // Append the bytes from the current vector
+		}
+		let txn_req_id = self.txn.upgrade().unwrap().txn_req_id;
 		ffi::execute_event(
-			self.txn.upgrade().unwrap().txn_req_id, 
+			txn_req_id,
 			self.idx, 
 			value, 
 			cnt
@@ -152,7 +159,7 @@ impl EvNode {
 
 	}
 
-	pub fn write_back<T: Database>(&self, value: &String, db: &T) {
+	pub fn write_back<T: Database>(&self, value: &Vec<u8>, db: &T) {
 		if self.has_storage_slot {
 			db.write_version(
 				"default", 
