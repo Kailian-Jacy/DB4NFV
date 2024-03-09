@@ -2,3 +2,4 @@
 	path = runtime
 	url = https://github.com/Kailian-Jacy/runtime_libVNF
 	branch = db4nfv_rust
+	commit = 498628062163515a2e7f82db9c1cf6da3e9d8980
