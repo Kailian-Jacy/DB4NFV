@@ -6,8 +6,8 @@ use crossbeam::atomic::AtomicCell;
 /*
 	Design of RingBuf:
 	Target:
-	- Thread safe when properly used.
-	- High performance. From cache alignment and lockless.
+	- Thread safe when visiting different cell.
+	- High performance from cache alignment and lockless.
  */
 pub struct RingBuf<T: RingBufContent> {
 	pub cap: usize,
@@ -18,6 +18,13 @@ pub struct RingBuf<T: RingBufContent> {
 	buf: Vec<RwLock<T>>,
 	full2panic: bool,
 }
+
+// Ring buf content requires to have Clone and default. 
+/*
+	Clone: when some cell records aborted content, it's marked as the same content as last version record.
+	Default: when ringbuf created, the very start content of each cell.
+ */
+pub trait RingBufContent: Clone + Default {}
 
 impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
@@ -33,13 +40,24 @@ impl<T: RingBufContent> RingBuf<T> {
 	pub fn size(&self) -> usize {
 		self.cap * mem::size_of::<T>()
 	}
+	pub fn len(&self) -> usize {
+		debug_assert!(self.end() != self.start());
+		if self.end() > self.start() {
+			(self.end() - self.start()) as usize
+		} else {
+			(self.cap - self.start() + self.end()) as usize
+		}
+	}
+	pub fn capacity(&self) -> usize	{
+		self.buf.capacity()
+	}
 	// Won't panic if full2panic is not true
     pub fn new(cap: usize, full2panic: Option<bool>) -> Self {
 		assert!(cap > 0);
 		let mut v = Vec::with_capacity(cap);
 		// TODO: Possibly with Vec.from_raw_parts.
 		for _ in 0..cap {
-			v.push(RwLock::new(T::new()));
+			v.push(RwLock::new(T::default()));
 		}
         Self {
             cap: cap,
@@ -96,27 +114,27 @@ impl<T: RingBufContent> RingBuf<T> {
 	    }
 	}
 	// Search back. Used when dating back to last valid version of state.
-	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
-		loop {
-			if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
-				// Found.
-				return Some(&self.buf[(self.start() + from_idx) % self.cap])
-			} else {
-				// Not found
-				if from_idx == 0 { return None }
-				from_idx = from_idx - 1;
-			}
-		}
-	}
+	// pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
+	// 	loop {
+	// 		if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
+	// 			// Found.
+	// 			return Some(&self.buf[(self.start() + from_idx) % self.cap])
+	// 		} else {
+	// 			// Not found
+	// 			if from_idx == 0 { return None }
+	// 			from_idx = from_idx - 1;
+	// 		}
+	// 	}
+	// }
 	// Truncate from the tail.
 	pub fn truncate_from(&self, index: usize) {
 		debug_assert!(index < self.len() as usize);
-		self.end.swap((&self.start() + index) % &self.cap);
+		self.end.store((&self.start() + index) % &self.cap);
 	}
 	// Truncate from the head.
 	pub fn discard_before(&self, index: usize) {
 		debug_assert!(index < self.len() as usize);
-		self.start.swap((self.start() + index) % self.cap);
+		self.start.store((self.start() + index) % self.cap);
 	}
 	/*
 		The user guarantee the ringbuffer content is increasingly ordered. So as to improve the searching efficiency.
@@ -133,18 +151,22 @@ impl<T: RingBufContent> RingBuf<T> {
 		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
 	}
 	pub fn ref_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
-		if self.start() <= self.end() {
-            self.binary_search(0, self.end() - self.start(),  &f)
-        } else {
-            let (first_half, second_half) = self.buf.split_at(self.end());
+		if self.start() < self.end() {
+            self.binary_search(self.start(), self.len(),  &f)
+        } else if self.start() > self.end() {
+            let (first_half, _) = self.buf.split_at(self.end());
             let first_half_len = first_half.len();
-            let found = self.binary_search(first_half_len, self.cap - self.start(), &f);
+            let found = self.binary_search(0, first_half_len, &f);
             if found.is_some() {
                 found
             } else {
-                self.binary_search(0, second_half.len() - 1, &f)
+				let (_, second_half) = self.buf.split_at(self.end());
+				let second_half_len = second_half.len();
+                self.binary_search(self.start(), second_half_len, &f)
             }
-        }
+        } else {
+			panic!("bug.")
+		}
 	}
 	fn binary_search(&self, start_idx: usize, len: usize, f: &Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
         let mut left = 0;
@@ -163,27 +185,14 @@ impl<T: RingBufContent> RingBuf<T> {
         }
         None
     }
-	pub fn len(&self) -> usize {
-		debug_assert!(self.end() != self.start());
-		if self.end() > self.start() {
-			(self.end() - self.start()) as usize
-		} else {
-			(self.cap - self.start() + self.end()) as usize
-		}
-	}
 }
 
-pub trait RingBufContent: Clone {
-	fn new() -> Self;
-}
 
 #[cfg(test)] 
 mod test {
 use super::*;
 
-impl RingBufContent for i32 {
-    fn new() -> Self { 0 }
-}
+impl RingBufContent for i32 {}
 
 // #[test]
 // fn test_ring_buffer() {

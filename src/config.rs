@@ -86,7 +86,8 @@ pub fn init(file_path: PathBuf) {
 
     // Read the configuration from the JSON file
 	let mut glb = CONFIG.write().unwrap();
-	*glb = read_config_from_file(file_path.to_str().unwrap()).unwrap();
+	*glb = read_config_from_file(file_path.to_str().unwrap())
+        .expect("Config parsing failure.");
     drop(glb);
 
     if CONFIG.try_read().unwrap().debug_mode {

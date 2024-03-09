@@ -10,6 +10,7 @@ use crate::utils::ShouldSyncCell;
 
 use super::txn_node::TxnNode;
 
+#[derive(Debug)]
 pub struct EvNode{
 	// Topology
 	// 
@@ -112,8 +113,16 @@ impl EvNode {
 
 	pub fn ready(&self) -> bool{
 		// Thread safe. Reusable.
-		self.status.load() == EventStatus::WAITING 
-			&& self.is_read_from_fulfilled.iter().all(|i| i.load() == true)
+		match self.status.load() {
+			EventStatus::WAITING | EventStatus::INQUEUE => {},
+			_ => {return false},
+		} 
+		self.no_waiting() 
+	}
+
+	// Nobody is waiting. May used before enqueue, since state is CONSTRUCT.
+	pub fn no_waiting(&self) -> bool {
+		self.is_read_from_fulfilled.iter().all(|i| i.load() == true)
 	}
 
 	// Wrapper. Calling execution handler.

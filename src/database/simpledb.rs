@@ -52,12 +52,13 @@ struct Table {
 	records: Vec<ringbuf::RingBuf<DataPoint<String>>>,
 }
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 struct DataPoint<T: Default> {
 	ts: u64,
 	value: T,
 	state: DataPointState,
 }
+
 
 // Debug state. Could just remove.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,15 +69,13 @@ enum DataPointState {
 	SHOULDBEEMPTY,
 }
 
-impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {
-	fn new() -> Self {
-		Self {
-			ts: 0,
-			value: Default::default(),
-			state: DataPointState::DEFAULT,
-		}
-	}
+impl Default for DataPointState {
+	fn default() -> Self {
+		DataPointState::DEFAULT
+	}	
 }
+
+impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {}
 
 impl Table {
 	fn empty_init(keys: Vec<&str>) -> Self {
@@ -88,6 +87,9 @@ impl Table {
 				// For each key, we have states_per_key rows. each contains a series of time stamp.
 				states.insert(format!("{}_{}", k, j), i * states_per_key + j);
 				records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
+			}
+			if CONFIG.read().unwrap().debug_mode {
+				println!("[DEBUG] key {} initiated for {} times.", k, states_per_key);
 			}
 		});
 		Table{

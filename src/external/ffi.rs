@@ -117,7 +117,7 @@ pub struct TxnMessage {
 
 pub fn deposit_transaction(a: String){
 	let msg: TxnMessage = serde_json::from_str(a.as_str()).unwrap();
-	if !msg.type_idx as usize >= TXN_TEMPLATES.get().unwrap().len() {
+	if msg.type_idx as usize >= TXN_TEMPLATES.get().unwrap().len() {
 		// Err(String::from("required index invalid."))
 		panic!("required index out of range.");
 	};
@@ -167,6 +167,7 @@ pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	 */
 }
 
+// all_variables parse keys from transactions for table initialization.
 pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
 	let mut ret: Vec<&'static str> = Vec::new();
 	TXN_TEMPLATES.get().unwrap().iter().for_each(|txn|{
@@ -180,6 +181,7 @@ pub(crate) fn all_variables() -> Vec<&'static str> { // WARN: lifecycle.
         
         ret.extend(all_reads.iter().map(|s| s.as_str()));
 	});
+	ret.dedup();
 	ret
 }
 

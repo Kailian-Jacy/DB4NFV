@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
 
+use crate::config::CONFIG;
 use crate::database::api::Database;
 use crate::database::simpledb;
 use crate::ds::transactions::TXN_TEMPLATES;
@@ -11,6 +12,7 @@ use crate::tpg::ev_node::{EvNode, EventStatus};
 use crate::utils::ShouldSyncCell;
 
 // Node linked to Construct TPG.
+#[derive(Debug)]
 pub struct TxnNode{
 	// TPG Links.
 	/*
@@ -78,7 +80,7 @@ impl TxnNode{
 				ev_nodes: ShouldSyncCell::new(Vec::new()),
 				txn_req_id: msg.txn_req_id,
 
-				ts: 0,
+				ts: msg.ts,
 				uncommitted_parents: AtomicCell::new(0),
 				unfinished_events: AtomicCell::new(0),
 			});
@@ -102,6 +104,9 @@ impl TxnNode{
 		let mut ev_nodes_place = ta.ev_nodes.write();
 		*ev_nodes_place = ev_nodes;
 		drop(ev_nodes_place);
+		if CONFIG.read().unwrap().debug_mode {
+			println!("[DEBUG] Received txn {:?}", ta);
+		}
 		Some(ta)
 	}
 
@@ -122,10 +127,13 @@ impl TxnNode{
 			let last_modify_hashmap = tb.read().unwrap();
 			// Anyway, update.
 			en.reads.iter().enumerate().for_each(|(idx, r)|{
-				let last_option = last_modify_hashmap.get(r.as_str());
+				let last_option = last_modify_hashmap.get(r.as_str())
+					.unwrap_or_else(|| 
+						{panic!("State not recognized in last_modify_hashmap: {:?}", r)}
+					);
 				if last_option.is_some() {
 					// 	Find parent. Do have last.
-					let last = last_option.unwrap().as_ref().unwrap();
+					let last = last_option.as_ref().unwrap();
 					// Must linking to non-garbage txn.
 					debug_assert!(last.1.status.load() != TxnStatus::GARBAGE);
 					// TODO. Check if allocation.
@@ -138,25 +146,27 @@ impl TxnNode{
 				} else {
 					let mut e = en.read_from[idx].write();
 					*e = None;
+					en.is_read_from_fulfilled[idx].store(true);
 				}
 			});
 			drop(last_modify_hashmap);
 			if en.has_write {
 				let self_arc =  en.txn.upgrade().unwrap().clone();
-				let last_modify_hashmap = tb.write().unwrap();
+				let mut last_modify_hashmap = tb.write().unwrap();
 				// Set self.cover and parent self.covered_by.
 				if let Some(Some(last)) = last_modify_hashmap.get(en.write.as_str()){
 					// Someone wrote. record and update list.
 					let mut re = self.cover[&en.write].write(); // Clone and remove later.
 					*re = Some(last.1.clone());
 					last.1.add_covered_by(&en.write, &self_arc);
-				} else {};
-				// Update to state_last_modify anyway.
-				/*
-					Here we assign a reference count to prevent the txn removed. 
-					Explicitly clone.
-				 */
-				tb.write().unwrap().insert(en.write.clone(), Some((Arc::downgrade(en),self_arc)));
+				} else {
+					// Update to state_last_modify anyway.
+					/*
+						Here we assign a reference count to prevent the txn removed. 
+						Explicitly clone.
+					*/
+					last_modify_hashmap.insert(en.write.clone(), Some((Arc::downgrade(en),self_arc)));
+				};
 			}
 		});
 	}

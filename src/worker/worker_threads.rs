@@ -1,9 +1,9 @@
-use crate::{database::{api::Database, simpledb::DB}, tpg::{ev_node::{EvNode, EventStatus}, tpg::TPG}};
+use crate::{config::CONFIG, database::{api::Database, simpledb::DB}, tpg::{ev_node::{EvNode, EventStatus}, tpg::TPG}};
 use std::sync::Arc;
 
 // These worker threads traverse through TPG and execute the operations.
 // TODO. db shall be used as shared.
-pub fn execute_thread(_: usize){
+pub fn execute_thread(tid: usize){
 	let mut evn_option : Option<Arc<EvNode>> = None; // Option: if we have migrated from related one, we don't need to fetch from queue.
 	loop {
 		if evn_option.is_none() {
@@ -14,19 +14,56 @@ pub fn execute_thread(_: usize){
 			}
 			match ev_gd.unwrap().try_recv() {
 					Ok(ev) => evn_option = Some(ev),
-					Err(_) => continue,
+					Err(err) => {
+						match err {
+							std::sync::mpsc::TryRecvError::Empty => continue,
+							std::sync::mpsc::TryRecvError::Disconnected => {
+								println!("Channel closed. Worker {} exit.", tid);
+							},
+						}
+					},
 				}
 		}
 
+		if CONFIG.read().unwrap().debug_mode {
+			println!("[DEBUG] evn claimed on thread {}", tid);
+		}
+
 		let evn = evn_option.as_ref().unwrap();
+		match evn.status.load() {
+			EventStatus::INQUEUE => {
+				debug_assert!(evn.ready());
+				evn.status.store(EventStatus::CLAIMED); // Claimed by this worker thread.
+			},
+			EventStatus::CONSTRUCT | EventStatus::WAITING => panic!("bug."),
+			EventStatus::CLAIMED | EventStatus::ACCEPTED | EventStatus::ABORTED => {
+				println!("Claimed event into queue.");
+				continue;
+			},
+		}
 
 		// Assertion checking the dependency has been satistifed.
-		debug_assert!(evn.ready());
 
 		// Fetch required states;
-		let ts = evn.txn.upgrade().unwrap().ts;
+		debug_assert!(
+			evn.read_from.len() 
+			== evn.reads.len()
+		);
 		let values = evn.reads
-			.iter().map(|e| (DB.get().unwrap()).get_version("default", e, ts)).collect();
+			.iter().enumerate().map(
+				|(idx, r)| {
+					if evn.read_from[idx].read().is_none() {
+						// TODO: Router to default value.
+						String::from("")
+					} else {
+						let ts = (*evn.read_from[idx].read()).as_ref().unwrap().upgrade().unwrap()
+							.txn.upgrade().unwrap()
+							.ts;
+						(DB.get().unwrap())
+						.get_version("default", r, ts)
+					}
+				}
+			).collect();
 
 		// Call the Cpp execution func.
 		let (res, v) = evn.execute(&values, values.len() as i32);

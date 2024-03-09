@@ -81,7 +81,7 @@ pub fn construct_thread(_: i16){
 
 		// if ready, into ready_queue. Else will be visited by ancestors.
 		tn.ev_nodes.read().iter().for_each(|ev_node| {
-			if ev_node.ready() {
+			if ev_node.no_waiting() {
 				ev_node.status.store(EventStatus::INQUEUE);
 			    TPG.get().unwrap().ready_queue_in.send(ev_node.clone()).unwrap();
 			} else {

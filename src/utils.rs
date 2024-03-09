@@ -3,6 +3,7 @@ use std::{sync::{RwLock, RwLockReadGuard, RwLockWriteGuard}, time::{SystemTime, 
 
 // Some data structure in our system guarantees thread safety by itself. Mark it to be "Will be no conflict" and detect bug.
 // IT WOULD PANIC if any waiting happens.
+#[derive(Debug)]
 pub(crate) struct ShouldSyncCell<T>{
     body: RwLock<T>
 }
