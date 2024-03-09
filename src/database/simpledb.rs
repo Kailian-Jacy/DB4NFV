@@ -130,11 +130,9 @@ impl Table {
 			obj.is_none() || obj.unwrap().state != DataPointState::ABORTED
 		});
 		debug_assert!({
-			let pos = self.records[self.states[key]].position_as_ordered(Box::new(move |dp| dp.ts.cmp(&ts)));
-			match pos{
-				Some(i) => i == self.records[self.states[key]].len()-1,
-				None => false,
-			}
+			let t = &self.records[self.states[key]];
+			let n = t.peek(t.len());
+			n.is_none()	|| n.is_some_and(|dp| dp.ts < ts)
 		});
 		// Create a new DataPoint with the provided timestamp and value.
 		let new_data_point = DataPoint {

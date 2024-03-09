@@ -149,8 +149,8 @@ impl EvNode {
 			This function is just single threaded:
 			- Only one thread calling for one EvNode each time.
 		 */
-		debug_assert!(self.status.load() == EventStatus::WAITING);
-		self.status.swap(EventStatus::ACCEPTED);
+		debug_assert!(self.status.load() == EventStatus::CLAIMED);
+		self.status.store(EventStatus::ACCEPTED);
 
 		// Inform event accepted.
 		self.txn.upgrade().unwrap().event_accepted();

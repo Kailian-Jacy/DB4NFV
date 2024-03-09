@@ -29,7 +29,7 @@ pub trait RingBufContent: Clone + Default {}
 impl<T: RingBufContent> RingBuf<T> {
 	#[inline]
 	pub fn end(&self) -> usize {
-		self.end.load() - 1
+		self.end.load()
 	}
 	#[inline]
 	pub fn start(&self) -> usize {
@@ -82,11 +82,11 @@ impl<T: RingBufContent> RingBuf<T> {
 		// 		true
 		// 	}
 		// });
-		if self.end() == self.start() - 1 || self.end() + self.cap == self.start() - 1 {
+		if self.end() == self.start() {
 			if self.full2panic {
 				panic!("ring buf full.")
 			} else {
-				println!("ring buf full.")
+				println!("[WARNING] ring buf full.")
 			}
 		}
 		*self.buf[self.end() as usize].write().unwrap() = item;

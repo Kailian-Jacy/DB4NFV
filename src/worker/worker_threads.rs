@@ -54,7 +54,7 @@ pub fn execute_thread(tid: usize){
 				|(idx, r)| {
 					if evn.read_from[idx].read().is_none() {
 						// TODO: Router to default value.
-						let zero_byte = '0' as u8;
+						let zero_byte = '\0' as u8;
 						vec![zero_byte]
 					} else {
 						let ts = (*evn.read_from[idx].read()).as_ref().unwrap().upgrade().unwrap()
@@ -73,11 +73,13 @@ pub fn execute_thread(tid: usize){
 			Swap out, check it, and put it back.
 		 */
 		 // TODO.
-		if (!abortion) && evn.status.swap(EventStatus::ABORTED) == EventStatus::WAITING {
+		if (!abortion) && evn.status.load() == EventStatus::CLAIMED {
 			evn.accepted();
 			evn.write_back(&v, DB.get().unwrap());
 			evn_option = evn.get_next_option_push_others_ready(&TPG.get().unwrap().ready_queue_in);
-			evn_option.as_ref().unwrap().status.store(EventStatus::CLAIMED);
+			if evn_option.is_some() {
+				evn_option.as_ref().unwrap().status.store(EventStatus::CLAIMED);
+			}
 			continue;
 		} else {
 			if !abortion {

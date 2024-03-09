@@ -33,7 +33,7 @@ pub struct TxnNode{
 	pub ts: u64,
 
 	// State count
-	uncommitted_parents: AtomicCell<u16>, // When WAITING.
+	// uncommitted_parents: Vec<ShouldSyncCell<Option<Weak<TxnNode>>>>, // When WAITING.
 	unfinished_events: AtomicCell<u16>,   // When WAITING.
 }
 
@@ -81,8 +81,8 @@ impl TxnNode{
 				txn_req_id: msg.txn_req_id,
 
 				ts: msg.ts,
-				uncommitted_parents: AtomicCell::new(0),
-				unfinished_events: AtomicCell::new(0),
+				// uncommitted_parents: AtomicCell::new(0),
+				unfinished_events: AtomicCell::new(tpl.es.len() as u16),
 			});
 		if msg.reads_idx.len() < tpl.es.len() || msg.write_idx.len() < tpl.es.len() {
 			return None
@@ -137,11 +137,13 @@ impl TxnNode{
 					// Must linking to non-garbage txn.
 					debug_assert!(last.1.status.load() != TxnStatus::GARBAGE);
 					// TODO. Check if allocation.
+					// Set this event.read_from
 					let mut e = en.read_from[idx].write();
 					*e = Some(last.0.clone());
 					en.is_read_from_fulfilled[idx].store(
 						last.0.upgrade().unwrap().status.load() == EventStatus::ACCEPTED
 					);
+					// Set read by for both parent evNode and txnNode.
 					last.0.upgrade().unwrap().add_read_by(&en);
 				} else {
 					let mut e = en.read_from[idx].write();
@@ -188,14 +190,29 @@ impl TxnNode{
 			.insert(key.clone(), Some(Arc::downgrade(tn)));
 	}
 
+	pub fn no_waiting(&self) -> bool {
+		self.read_from.iter().all(|tn| tn.read().is_none())
+	}
+
 	// Safe function.
-	pub fn father_committed(&self) {
+	pub fn father_committed(&self, father: &TxnNode) {
 		debug_assert!(
 			self.status.load() == TxnStatus::WAITING
 				|| self.status.load() == TxnStatus::ABORTED // Aborted transaction also passes commitment to descedants.
 		);
-		debug_assert!(self.uncommitted_parents.load() > 0);
-		self.uncommitted_parents.fetch_sub(1);
+		// Find father himself in the son's reading list.
+		self.read_from.iter().any(|tn_op	| {
+			if tn_op.read().as_ref().is_some_and(|tn| tn.ts == father.ts ) {
+				// Set to None.
+				let mut w = tn_op.write();
+				*w = None;
+				true
+			} else {
+				false
+			}
+		} );
+		// debug_assert!(self.uncommitted_parents.load() > 0);
+		// self.uncommitted_parents.fetch_sub(1);
 	}
 
 	// Try to commit this transaction. Only happens to WAITIING/ABORTED transaction. Remind, ABORTED txn could also be committed.
@@ -220,7 +237,7 @@ impl TxnNode{
 		// 	TxnStatus::WAITING => {},
 		// 	_ => return false,
 		// }
-		if !(self.unfinished_events.load() == 0 && self.uncommitted_parents.load() == 0) {
+		if !(self.unfinished_events.load() == 0 && self.no_waiting()) {
 			return false
 		}
 		// Having decide this txn can be commmitted.
@@ -231,7 +248,7 @@ impl TxnNode{
 		// Record decrement on sons.
 		for son in self.read_by.read().unwrap().iter() {
 			let node = son.as_ref().unwrap().upgrade().unwrap(); // Son could not have been released. 
-			node.father_committed();
+			node.father_committed(self);
 			// We don not think a network situation would allow so much txn linked to cause stack overflow. So recursion here.
 			node.try_commit();
 		}
