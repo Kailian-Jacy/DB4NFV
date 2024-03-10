@@ -63,15 +63,15 @@ struct DataPoint<T: Default> {
 // Debug state. Could just remove.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DataPointState {
-	DEFAULT,
+	// DEFAULT,
 	NORMAL,
-	ABORTED,
+	// ABORTED,	// Aborted modes, but copying last valid result. TODO: Possibly remove it?
 	SHOULDBEEMPTY,
 }
 
 impl Default for DataPointState {
 	fn default() -> Self {
-		DataPointState::DEFAULT
+		DataPointState::NORMAL
 	}	
 }
 
@@ -97,6 +97,8 @@ impl Table {
 			records: records,
 		}
 	}
+
+	// Called by accepted operations that being reset by aborted ancestors.
 	fn reset_version(&self, key: &str, ts: u64){
 	// This only called on obj with normal states.
 		debug_assert!(self.states.contains_key(key));
@@ -109,27 +111,53 @@ impl Table {
 		obj.unwrap().state = DataPointState::SHOULDBEEMPTY;
 	}
 
+	// Copy last version happens when operations are aborted, so it fetches the resulf of last valid record.
+	/*
+		This function may happens to:
+		1. ACCEPTED evnode. In the same transaction as abortion evnode.
+		2. WAITING evnode. 
+	 */
 	fn copy_last_version(&self, key: &str, ts: u64){
 	// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!(self.states.contains_key(key));
-		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
-		debug_assert!({
-			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
-		});
-		obj.unwrap().state = DataPointState::ABORTED;
+		// Find position of the current.
+		let (idx, new);
+		let try_find_op = self.records[self.states[key]]
+			.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
+		if try_find_op.is_none() {
+			self.push_version(key, ts, &Vec::<u8>::new());
+			(idx, new) = self.records[self.states[key]]
+				.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)))
+				.expect("Just inserted such key. bug.");
+		} else {
+			(idx, new) = try_find_op.unwrap()
+		}
+		// Search back.
+		let to_copy_op = self.records[self.states[key]]
+			.search_back( Box::new(
+				|t| {t.state == DataPointState::NORMAL}
+			), idx);
+		let value = if to_copy_op.is_none() {
+			// Dated back to 0. Use default value.
+				vec![0]
+			} else {
+				to_copy_op.unwrap().read().unwrap().value.clone()
+			};
+		let mut new_w = new.write().unwrap();
+		new_w.value = value;
+		// WARNING: TODO Abortion deprecated here.
 	}
-
+	
 	// Stage version inserts the version at the end. The t is guaranteed to be the last version.
 	fn push_version(&self, key: &str, ts: u64, value: &Vec<u8>) {
 		// Insert dataPoint into vectors. Keep correct order.
 		debug_assert!(self.states.contains_key(key));
-		debug_assert!({
+		debug_assert!({ // Make sure it's not repeatedly pushed.
 			let obj = self.records[self.states[key]]
 				.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
-			obj.is_none() || obj.unwrap().state != DataPointState::ABORTED
+			obj.is_none()
 		});
-		debug_assert!({
+		debug_assert!({ // Make sure is increasing order.
 			let t = &self.records[self.states[key]];
 			let n = t.peek(t.len());
 			n.is_none()	|| n.is_some_and(|dp| dp.ts < ts)

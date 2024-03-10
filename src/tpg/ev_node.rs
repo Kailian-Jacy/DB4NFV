@@ -238,10 +238,11 @@ impl EvNode {
 		1. Mark 
 	 */
 	pub fn notify_txn_abort(&self){
-		debug_assert!(self.status.load() == EventStatus::CLAIMED && self.txn.upgrade().unwrap().status.load() == TxnStatus::WAITING);
+		debug_assert!(self.status.load() == EventStatus::CLAIMED 
+			&& self.txn.upgrade().unwrap().status.load() == TxnStatus::WAITING);
 		// Trigger txn abortion.
 		self.txn.upgrade().unwrap().abort();
-		self.abort();
+		// self.abort(); // Txn abortion includes self abortion.
 	}
 
 	// Called by transaction or the evnode itself. The actual behavior for abortion.
@@ -265,6 +266,7 @@ impl EvNode {
 	 */
 	pub	fn abort(&self) {
 		debug_assert!(
+			// TODO. Rethink: if WAITING would receive?
 			self.status.load() == EventStatus::CLAIMED
 				|| self.status.load() == EventStatus::ABORTED
 				|| self.status.load() == EventStatus::ACCEPTED
@@ -286,6 +288,7 @@ impl EvNode {
 					EventStatus::ACCEPTED => {
 						// State shift has been made. Recover the state shift and dive in.
 						node.status.store(EventStatus::WAITING);
+						// Reset later dependent nodes.
 						debug_assert!(node.is_read_from_fulfilled[idx].swap(false)); // Orginally must be true. Set false now.
 						simpledb::DB.get().unwrap()
 							.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
@@ -314,7 +317,8 @@ impl EvNode {
 
 	// Notification from parents in read_from.
 	fn parent_accepted(&self, idx: usize) {
-		debug_assert!(self.status.load() == EventStatus::WAITING);
+		debug_assert!(self.status.load() == EventStatus::WAITING
+		 || self.status.load() == EventStatus::CONSTRUCT );
 	    self.is_read_from_fulfilled[idx].swap(true);
 	}
 

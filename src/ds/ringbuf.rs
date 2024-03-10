@@ -67,7 +67,7 @@ impl<T: RingBufContent> RingBuf<T> {
 			full2panic: full2panic.unwrap_or(false),
         }
     }
-	pub fn push(&self, item: T){
+	pub fn push(&self, item: T) {
 		// Push in tail. Designed to be pushed in increasing order.
 		// debug_assert!({
 		// 	if self.end() != (self.start() + 1) % self.cap {
@@ -114,18 +114,18 @@ impl<T: RingBufContent> RingBuf<T> {
 	    }
 	}
 	// Search back. Used when dating back to last valid version of state.
-	// pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
-	// 	loop {
-	// 		if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
-	// 			// Found.
-	// 			return Some(&self.buf[(self.start() + from_idx) % self.cap])
-	// 		} else {
-	// 			// Not found
-	// 			if from_idx == 0 { return None }
-	// 			from_idx = from_idx - 1;
-	// 		}
-	// 	}
-	// }
+	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
+		loop {
+			if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
+				// Found.
+				return Some(&self.buf[(self.start() + from_idx) % self.cap])
+			} else {
+				// Not found
+				if from_idx == 0 { return None }
+				from_idx = from_idx - 1;
+			}
+		}
+	}
 	// Truncate from the tail.
 	pub fn truncate_from(&self, index: usize) {
 		debug_assert!(index < self.len() as usize);

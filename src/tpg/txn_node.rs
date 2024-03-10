@@ -29,11 +29,9 @@ pub struct TxnNode{
 	pub status: AtomicCell<TxnStatus>,
 	pub ev_nodes: ShouldSyncCell<Vec<Arc<EvNode>>>, 	// Holds EvNode ownership. Consider switch to exclusive ownership.  Now the RWLock is used to setup loopback reference.
 	pub txn_req_id: u64,
-	// pub joined_states_to_read: Vec<&'a str>, // Reference to String. Since from ev_nodes.
 	pub ts: u64,
 
 	// State count
-	// uncommitted_parents: Vec<ShouldSyncCell<Option<Weak<TxnNode>>>>, // When WAITING.
 	unfinished_events: AtomicCell<u16>,   // When WAITING.
 }
 
@@ -50,7 +48,8 @@ impl Drop for TxnNode {
 			release versoin should just increase the start cursor by 1 to finish releasing.
 	 */
 	fn drop(&mut self) {
-		debug_assert!(self.status.load() == TxnStatus::COMMITED);
+		// TODO. A waiting txn hitted here.
+		debug_assert!(self.status.load() == TxnStatus::COMMITED); // Aborted becomes COMMITTED in the end.
 		debug_assert!(self.read_from.iter().all(|tn| tn.read().is_none())
 						&& self.cover.iter().all(|(_k, v)| v.read().is_none())
 					);
@@ -71,8 +70,8 @@ impl TxnNode{
 				read_from: Vec::with_capacity(tpl.all_reads_length),  // Of the same size.h
 				read_by: RwLock::new(Vec::new()), // Empty and to construct.
 				cover: tpl.es
-					.iter().filter(|&e| e.has_write )
-					.map(|e| (e.write.clone(), ShouldSyncCell::new(None)))
+					.iter().enumerate().filter(|(_, e)| e.has_write )
+					.map(|(idx, e)| (format!("{}_{}", e.write, msg.write_idx[idx]), ShouldSyncCell::new(None)))
 					.collect(),
 				covered_by: RwLock::new(HashMap::new()),
 
@@ -104,9 +103,9 @@ impl TxnNode{
 		let mut ev_nodes_place = ta.ev_nodes.write();
 		*ev_nodes_place = ev_nodes;
 		drop(ev_nodes_place);
-		if CONFIG.read().unwrap().debug_mode {
-			println!("[DEBUG] Received txn {:?}", ta);
-		}
+		// if CONFIG.read().unwrap().debug_mode {
+		// 	println!("[DEBUG] Received txn {:?}", ta);
+		// }
 		Some(ta)
 	}
 
@@ -129,7 +128,7 @@ impl TxnNode{
 			en.reads.iter().enumerate().for_each(|(idx, r)|{
 				let last_option = last_modify_hashmap.get(r.as_str())
 					.unwrap_or_else(|| 
-						{panic!("State not recognized in last_modify_hashmap: {:?}", r)}
+						{panic!("State has no slot in last_modify_hashmap: {:?}", r)}
 					);
 				if last_option.is_some() {
 					// 	Find parent. Do have last.
@@ -182,7 +181,7 @@ impl TxnNode{
 
 	// Add_covered_by adds txn that writes the same key as constraint.
 	pub fn add_covered_by(&self, key: &String, tn: &Arc<TxnNode>) {
-		debug_assert!({ !self.covered_by // impossible to be added twice.
+		debug_assert!({ self.covered_by // impossible to be added twice. So this slot must be none.
 			.read().unwrap()
 			.get(key).is_none()
 		});
@@ -201,7 +200,7 @@ impl TxnNode{
 				|| self.status.load() == TxnStatus::ABORTED // Aborted transaction also passes commitment to descedants.
 		);
 		// Find father himself in the son's reading list.
-		self.read_from.iter().any(|tn_op	| {
+		if !self.read_from.iter().any(|tn_op	| {
 			if tn_op.read().as_ref().is_some_and(|tn| tn.ts == father.ts ) {
 				// Set to None.
 				let mut w = tn_op.write();
@@ -210,7 +209,9 @@ impl TxnNode{
 			} else {
 				false
 			}
-		} );
+		}) {
+			println!("committed father not in son read_from.");
+		}
 		// debug_assert!(self.uncommitted_parents.load() > 0);
 		// self.uncommitted_parents.fetch_sub(1);
 	}
@@ -358,7 +359,10 @@ impl TxnNode{
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
 		self.status.store(TxnStatus::ABORTED);
 		self.ev_nodes
-			.read().iter().for_each(|e|e.abort());
+			.read().iter().for_each(
+				|e| 
+				if e.status.load() != EventStatus::ABORTED { e.abort() }
+			);
 		self.unfinished_events.store(0);
 		self.try_commit();
 	}
