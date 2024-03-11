@@ -1,3 +1,5 @@
 /build
 /target
 /.vscode
+/perf
+config.json
