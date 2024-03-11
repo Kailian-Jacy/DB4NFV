@@ -16,7 +16,7 @@ Overview:
 
 - Transaction Request handing rates / (second * thread).
 
-![Alt text](assets/image.png)
+![Alt text](assets/total.png)
 
 Stage: Latency for an event finish all its needed states.
 
