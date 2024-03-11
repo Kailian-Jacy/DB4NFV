@@ -88,7 +88,7 @@ impl Table {
 				states.insert(format!("{}_{}", k, j), i * states_per_key + j);
 				records.push(RingBuf::new(CONFIG.read().unwrap().ringbuffer_size as usize, Some(CONFIG.read().unwrap().ringbuffer_full_to_panic)));
 			}
-			if CONFIG.read().unwrap().debug_mode {
+			if CONFIG.read().unwrap().verbose{
 				println!("[DEBUG] key {} initiated for {} times.", k, states_per_key);
 			}
 		});
@@ -182,12 +182,6 @@ impl Table {
 				.read().unwrap()
 				.state == DataPointState::SHOULDBEEMPTY
 		});
-		// Create a new DataPoint with the provided timestamp and value.
-		let new_data_point = DataPoint {
-			ts: ts,
-			value: value.clone(),
-			state: DataPointState::NORMAL,
-		};
 		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
 		obj_ref.unwrap().1.write().unwrap().value = value.clone();
 		// TODO: Search back.

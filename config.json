@@ -7,5 +7,7 @@
   "ringbuffer_full_to_panic": false,
   "transaction_pooling_size": 10000,
   "max_state_records": 10000,
-  "debug_mode": true
+  "verbose": true,
+  "monitor_enabled": true,
+  "log_dir": "."
 }

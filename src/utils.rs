@@ -39,11 +39,10 @@ pub fn ns_to_system_time(nanoseconds: u64) -> SystemTime {
     UNIX_EPOCH + duration
 }
 
-pub fn bind_to_cpu_core(c: usize){
+pub fn bind_to_cpu_core(){
     let core_ids = core_affinity::get_core_ids().unwrap();
-    assert!(c < core_ids.len());
     let res = core_affinity::set_for_current(
-        core_ids[c]
+        core_ids[0]
     );
     if !res {
         panic!("Bingding failed.")

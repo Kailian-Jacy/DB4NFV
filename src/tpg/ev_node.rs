@@ -45,7 +45,7 @@ pub struct EvNode{
 	has_storage_slot: bool,
 
 	// Router to execute function.
-	idx: i32,
+	pub idx: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,21 +59,6 @@ pub enum EventStatus{
 	ABORTED,
 	// No Garbage. It would be collected along with the whole transaction.
 }
-
-// impl Clone for EvNode {
-// 	fn clone(&self) -> Self {
-// 		Self {
-// 			read_from: self.read_from.clone(),
-// 			read_by: self.read_by.clone(),
-// 			txn: self.txn.clone(),
-// 			status: self.status,
-// 			unfinished_read_from: AtomicCell::new(self.unfinished_read_from.load()),
-// 			reads: self.reads.clone(),
-// 			write: self.write.clone(),
-// 			idx: self.idx,
-// 		}
-// 	}
-// }
 
 impl EvNode {
 	// Only used to create node from template.

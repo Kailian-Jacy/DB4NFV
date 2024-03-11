@@ -1,13 +1,18 @@
 use crate::external::{ffi, pipe};
+use crate::monitor::monitor;
 use crate::tpg::tpg::TPG;
 use crate::tpg::{
 	txn_node::*,
 	ev_node::*,
 };
+use crate::utils;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TryRecvError;
 
 use crate::config::CONFIG;
+
+pub static GRACEFUL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 // This worker thread constructs TPG streamingly.
 // TODO. Slab memory allocation to reduce the allocation time.
@@ -23,6 +28,10 @@ pub fn construct_thread(_: i16){
 
 	// TODO. Graceful shutdown.
 	loop { // Outer loop. For each valid transaction.
+		if GRACEFUL_SHUTDOWN.load(Ordering::SeqCst) == true{
+			println!("Construct thread shutdown. ");
+			break
+		}
 		let tn;
 		// Message receiver.
 		loop { // Inner loop. Take out txn from queue and order it. Take out latest transacation each time.
@@ -40,7 +49,7 @@ pub fn construct_thread(_: i16){
 					}
 				},
 			};
-			if CONFIG.read().unwrap().debug_mode {
+			if CONFIG.read().unwrap().verbose {
 				let op_tn = TxnNode::from_message(new_txn_msg.clone());
 				if op_tn.is_none(){
 					ffi::txn_finished_sign(new_txn_msg.txn_req_id); // TODO. Inform illegal.
@@ -75,9 +84,29 @@ pub fn construct_thread(_: i16){
 
 			break;
 		}
+
+		if CONFIG.read().unwrap().monitor_enabled {
+			monitor::MONITOR.get().unwrap()[0].log(monitor::Metrics{
+				ts: utils::current_time_ns(),
+				content: format!("{},dispatched_from_vnf,{}", tn.txn_req_id, tn.ts),
+			});
+
+			monitor::MONITOR.get().unwrap()[0].log(monitor::Metrics{
+				ts: utils::current_time_ns(),
+				content: format!("{},sorting_done,{}", tn.txn_req_id, utils::current_time_ns()),
+			});
+		}
+
 		// Set link between events nodes to later ones.
 		// Set link between this txn and its parents.
 		tn.set_links(&TPG.get().unwrap().state_last_modify);
+
+		if CONFIG.read().unwrap().monitor_enabled {
+			monitor::MONITOR.get().unwrap()[0].log(monitor::Metrics{
+				ts: utils::current_time_ns(),
+				content: format!("{},linked_to_tpg,{}", tn.txn_req_id, utils::current_time_ns()),
+			});
+		}
 
 		// if ready, into ready_queue. Else will be visited by ancestors.
 		tn.ev_nodes.read().iter().for_each(|ev_node| {
@@ -93,16 +122,26 @@ pub fn construct_thread(_: i16){
 				}
 			});
 
+			if CONFIG.read().unwrap().monitor_enabled {
+				monitor::MONITOR.get().unwrap()[0].inc("evnode.let_occupy");
+				monitor::MONITOR.get().unwrap()[0].log(monitor::Metrics{
+					ts: utils::current_time_ns(),
+					content: format!("{},ready_to_be_fetched,{}", tn.txn_req_id, utils::current_time_ns()),
+				});
+			}
+
 			// Has fulfilled according to detection.
 			if ev_node.no_waiting() {
 				// Try to fetch into queue.
 				match ev_node.status.compare_exchange(EventStatus::WAITING, EventStatus::INQUEUE) {
 					Ok(_) =>  {
+						monitor::MONITOR.get().unwrap()[0].inc("evnode.enqueue");
 						TPG.get().unwrap().ready_queue_in.send(ev_node.clone()).unwrap();
 					},
 					// Has been claimed by worker threads.
 					Err(state) => {
 						debug_assert!(state == EventStatus::CLAIMED);
+						monitor::MONITOR.get().unwrap()[0].inc("rare_condition.evnode.claimed_when_counting.");
 						ev_node.status.store(EventStatus::WAITING);
 					}
 				}

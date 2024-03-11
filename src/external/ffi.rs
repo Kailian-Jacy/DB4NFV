@@ -47,9 +47,8 @@ unsafe extern "C++" {
 
 }
 
-use std::{collections::HashMap, hash::Hash, mem};
+use std::{collections::HashMap, mem};
 
-use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use crate::{config::CONFIG, ds::transactions::{Txn, TXN_TEMPLATES}};
 use crate::ds::events as ev;
@@ -133,7 +132,7 @@ pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
 	let json_string = 
 		ffi::Init_SFC(argc, argv);
 
-	if CONFIG.read().unwrap().debug_mode {
+	if CONFIG.read().unwrap().verbose {
 		println!("{}", json_string);
 	}
 

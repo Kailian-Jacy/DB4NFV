@@ -26,8 +26,12 @@ pub struct Config {
     pub transaction_pooling_size: usize,
     // Max state record size.
     pub max_state_records: usize,
-    // Debug mode enables verbose output.
-    pub debug_mode: bool,
+    // Verbose output.
+    pub verbose: bool,
+    // If enable monitor thread.
+    pub monitor_enabled: bool,
+    // Monitor logging path. Default to be current path.
+    pub log_dir: String,
 }
 
 lazy_static! {
@@ -45,7 +49,9 @@ impl Default for Config {
             max_state_records: 10000,
             ringbuffer_full_to_panic: false,
             transaction_pooling_size: 10000,
-            debug_mode: false,
+            verbose: true,
+            monitor_enabled: true,
+            log_dir: String::from("."),
         }
     }
 }
@@ -90,7 +96,7 @@ pub fn init(file_path: PathBuf) {
         .expect("Config parsing failure.");
     drop(glb);
 
-    if CONFIG.try_read().unwrap().debug_mode {
+    if CONFIG.try_read().unwrap().verbose {
 	    println!("== Config Inited.");
         println!("{:?}", CONFIG.read().unwrap());
     }
@@ -99,7 +105,9 @@ pub fn init(file_path: PathBuf) {
     let core_ids = core_affinity::get_core_ids().unwrap();
     if  CONFIG.read().unwrap().worker_threads_num + 
         CONFIG.read().unwrap().vnf_threads_num + // Vnf threads.
-        1 > // Main or construction thread. 
+        1 + // Main or construction thread. 
+        1 // Monitor thread
+        > 
         core_ids.len() as u16
     {
         panic!("No sufficient cores for pointed thread nums. Total {:?}", core_ids.len());
