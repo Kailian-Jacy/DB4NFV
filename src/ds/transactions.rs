@@ -12,6 +12,7 @@ pub struct Txn{
 	pub es: Vec<ev::Event>,
 	// To be added.
 
+    pub all_reads_index_map: HashMap<String, usize>,
 	pub all_reads_length: usize,
 }
 
@@ -52,5 +53,7 @@ impl Txn {
 
         // Set all_reads_length
         self.all_reads_length = all_reads.len();
+        self.all_reads_index_map = all_reads.iter()
+            .enumerate().map(|(idx, s)| (s.clone(), idx)).collect();
     }
 }

@@ -97,7 +97,7 @@ impl<T: RingBufContent> RingBuf<T> {
 	    if self.start() + 1 == self.end() {
 			None
 	    } else {
-			let r = Some(self.buf[self.end() - 1 as usize].read().unwrap().clone());
+			let r = Some(self.buf[(self.end() - 1) & self.cap as usize].read().unwrap().clone());
 			if self.end() == 0 {
 				self.end.swap(self.cap);
 			} 
@@ -110,7 +110,7 @@ impl<T: RingBufContent> RingBuf<T> {
 	    if self.end() - self.start() - 1 < idx {
 			None
 	    } else {
-			Some(self.buf[self.start() + idx].read().unwrap().clone())
+			Some(self.buf[(self.start() + idx) % self.cap].read().unwrap().clone())
 	    }
 	}
 	// Search back. Used when dating back to last valid version of state.

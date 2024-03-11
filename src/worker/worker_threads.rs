@@ -4,8 +4,12 @@ use std::sync::Arc;
 // These worker threads traverse through TPG and execute the operations.
 // TODO. db shall be used as shared.
 pub fn execute_thread(tid: usize){
+	let mut evn_option_next : Option<Arc<EvNode>> = None; 
 	let mut evn_option : Option<Arc<EvNode>> = None; // Option: if we have migrated from related one, we don't need to fetch from queue.
 	loop {
+		evn_option = evn_option_next;
+		evn_option_next = None;
+
 		if evn_option.is_none() {
 			// Loop to get from the ready queue. Listen from graceful shutdown.
 			let ev_gd = TPG.get().unwrap().ready_queue_out.try_lock();
@@ -35,15 +39,20 @@ pub fn execute_thread(tid: usize){
 				debug_assert!(evn.ready());
 				evn.status.store(EventStatus::CLAIMED); // Claimed by this worker thread.
 			},
-			EventStatus::CONSTRUCT | EventStatus::WAITING => panic!("bug."),
+			EventStatus::CONSTRUCT => panic!("bug."),
+			// When in queue, it's resetted and set WAITING.
+			EventStatus::WAITING => {
+				println!("Worker Queue: Rare condition. Reset event in queue.");
+				debug_assert!({
+					evn.no_waiting() == false
+				});
+				continue;
+			},
 			EventStatus::CLAIMED | EventStatus::ACCEPTED | EventStatus::ABORTED => {
-				println!("Claimed event into queue.");
+				println!("Worker Queue: Rare condition. claimed event into queue.");
 				continue;
 			},
 		}
-
-		// Assertion checking the dependency has been satistifed.
-
 		// Fetch required states;
 		debug_assert!(
 			evn.read_from.len() 
@@ -73,18 +82,16 @@ pub fn execute_thread(tid: usize){
 			Swap out, check it, and put it back.
 		 */
 		 // TODO.
-		if (!abortion) && evn.status.load() == EventStatus::CLAIMED {
-			evn.accepted();
+		if !abortion {
+			debug_assert!(evn.status.load() == EventStatus::CLAIMED ); // Not possible to reset during working.
+			evn.accept();
 			evn.write_back(&v, DB.get().unwrap());
-			evn_option = evn.get_next_option_push_others_ready(&TPG.get().unwrap().ready_queue_in);
-			if evn_option.is_some() {
-				evn_option.as_ref().unwrap().status.store(EventStatus::CLAIMED);
-			}
+			evn_option_next = evn.get_next_option_push_others_ready(&TPG.get().unwrap().ready_queue_in);
 			continue;
 		} else {
 			if !abortion {
 				// Swapped non-waiting state.
-				println!("Rare condition: operation switch to abortion when execution.")
+				println!("Rare condition: operation switch to abortion when execution.");
 			}
 			evn.notify_txn_abort();
 		}

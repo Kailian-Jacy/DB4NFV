@@ -47,7 +47,7 @@ unsafe extern "C++" {
 
 }
 
-use std::mem;
+use std::{collections::HashMap, hash::Hash, mem};
 
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,7 @@ pub(crate) fn init_sfc(argc: i32, argv: Vec<String>) {
             let txn = Txn {
                 es: transaction_data.state_accesses,
                 all_reads_length: 0,
+				all_reads_index_map: HashMap::new(),
             };
             txns.push(txn);
         }

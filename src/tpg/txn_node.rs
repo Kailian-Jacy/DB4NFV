@@ -1,9 +1,10 @@
+use std::fmt::write;
+use std::hash::Hash;
 use std::mem;
 use std::sync::{Arc, RwLock, Weak};
 use std::collections::HashMap;
 use crossbeam::atomic::AtomicCell;
 
-use crate::config::CONFIG;
 use crate::database::api::Database;
 use crate::database::simpledb;
 use crate::ds::transactions::TXN_TEMPLATES;
@@ -16,14 +17,40 @@ use crate::utils::ShouldSyncCell;
 pub struct TxnNode{
 	// TPG Links.
 	/*
-		read_from:
-		- Size fixed after building. Comes from joined keys. Template should all be empty.
-
+		These links composes the whole TPG.
+		When those nodes are in use, they are in the style of cyclic counted reference (Arc) to keep alive.
+		When one end in the link decides the other end is useless, it release the count reference.
+		When some node is discarded by every neighbor, it got collected by drop().
 	 */
-	pub read_from: Vec<ShouldSyncCell<Option<Arc<TxnNode>>>>,           			// No Lock needed. Set after initialization. This link used for marking parent txn as garbage and release at correct time.
-	pub read_by: RwLock<Vec<Option<Weak<TxnNode>>>>,	            // Needs Lock. read_by updates dynamically. This link used for try_commit this txn.
-	pub cover: HashMap<String, ShouldSyncCell<Option<Arc<TxnNode>>>>,	            // No Lock needed. Only being edited in construction. 
-	pub covered_by: RwLock<HashMap<String, Option<Weak<TxnNode>>>>, // RwLock needed. Read by many, could written by many. 
+	/*
+		read_from: This link used for marking parent txn as garbage and release at correct time.
+		- No Lock needed. Set after initialization. 
+		- Construct by construct_thread with add_link function.
+		- Release when son is committed so its parents resources must be useless.
+	 */
+	pub read_from: Vec<ShouldSyncCell<Option<Arc<TxnNode>>>>,           			
+	pub read_from_index_map: HashMap<String, usize>,
+	/*
+		read_by: This link used to reach its son and keep its son 
+		- Needs Lock. read_by updates dynamically. This link used for try_commit this txn.
+		- Construct dynamically, when later txn constructs, they add link to this older txn.
+		- Never drops by hand. Only drops when the parent dropped. 
+	 */
+	pub read_by: RwLock<Vec<Option<Arc<TxnNode>>>>,	        
+	/*
+		Cover: This link used to reach its write parent and keep its write parent. (Parent txn writing the same state.)
+		- No Lock needed. 
+		- Construct by construct_thread. Only being edited in construction.  
+		- Release when son is committed so its parents resources must be useless.
+	 */
+	pub cover: HashMap<String, ShouldSyncCell<Option<Arc<TxnNode>>>>,
+	/*
+		Covered_by: This link used to reach its write Son and keep its write Son. (Son txn writing the same state.)
+		- RwLock needed. Single thread insert (Constructor), multiple thread write (Set none), multiple thread reads.
+		- Construct dynamically, when later txn constructs, they add link to this older txn.
+		- Never drops by hand. Only drops when the parent dropped. 
+	 */
+	pub covered_by: RwLock<HashMap<String, Option<Arc<TxnNode>>>>, 
 
 	// Meta.
 	pub status: AtomicCell<TxnStatus>,
@@ -33,6 +60,16 @@ pub struct TxnNode{
 
 	// State count
 	unfinished_events: AtomicCell<u16>,   // When WAITING.
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxnStatus {
+	// Waiting marks the unfinished dependent txns counts.
+	WAITING,	
+	// Committed returns value. 
+	// Remind: To pass commitment down, we'll also mark aborted txn to be committed when its parents all committed.
+	COMMITED, 
+	ABORTED,
 }
 
 impl Drop for TxnNode {
@@ -65,9 +102,17 @@ impl TxnNode{
 	 */
 	pub fn from_message(mut msg: TxnMessage) -> Option<Arc<Self>> {
 		let tpl = &TXN_TEMPLATES.get().unwrap()[msg.type_idx as usize];
-		// TODO. Allocate from manager.
+		let mut index_map = HashMap::new();
+		let mut read_from_array = Vec::new();
+		tpl.es.iter().enumerate().for_each(|(e_idx, e)| 
+			e.reads.iter().enumerate().for_each(|(r_idx, state)| {
+				index_map.insert(format!("{}_{}", state, msg.reads_idx[e_idx][r_idx]), read_from_array.len());
+				read_from_array.push(ShouldSyncCell::new(None));
+			})
+		);
 		let ta = Arc::new(TxnNode{
-				read_from: Vec::with_capacity(tpl.all_reads_length),  // Of the same size.h
+				read_from: read_from_array,
+				read_from_index_map: index_map,
 				read_by: RwLock::new(Vec::new()), // Empty and to construct.
 				cover: tpl.es
 					.iter().enumerate().filter(|(_, e)| e.has_write )
@@ -109,7 +154,7 @@ impl TxnNode{
 		Some(ta)
 	}
 
-	// set links on tpg for eventNodes. This function is dangerous.
+	// set links on tpg for eventNodes. This function is dangerous. Only call from construct thread.
 	pub fn set_links(&self, tb: &RwLock<HashMap<String, Option<(Weak<EvNode>,Arc<TxnNode>)>>>) {
 		/*
 			add_dependency executes steps in sequence to ensure safety:
@@ -121,53 +166,57 @@ impl TxnNode{
 		 */
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
 		self.ev_nodes.read().iter().for_each(|en| {
-			debug_assert!(en.status.load() == EventStatus::CONSTRUCT);
+			debug_assert!(en.status.load() == EventStatus::CONSTRUCT); 
 			// Set read_from and parent read_by.
 			let last_modify_hashmap = tb.read().unwrap();
 			// Anyway, update.
-			en.reads.iter().enumerate().for_each(|(idx, r)|{
-				let last_option = last_modify_hashmap.get(r.as_str())
+			en.reads.iter().enumerate().for_each(|(idx, state)|{
+				let last_option = last_modify_hashmap.get(state.as_str())
 					.unwrap_or_else(|| 
-						{panic!("State has no slot in last_modify_hashmap: {:?}", r)}
+						{panic!("State has no slot in last_modify_hashmap: {:?}", state)}
 					);
 				if last_option.is_some() {
 					// 	Find parent. Do have last.
-					let last = last_option.as_ref().unwrap();
-					// Must linking to non-garbage txn.
-					debug_assert!(last.1.status.load() != TxnStatus::GARBAGE);
+					let (last_en, last_tn) = last_option.as_ref().unwrap();
 					// TODO. Check if allocation.
 					// Set this event.read_from
 					let mut e = en.read_from[idx].write();
-					*e = Some(last.0.clone());
-					en.is_read_from_fulfilled[idx].store(
-						last.0.upgrade().unwrap().status.load() == EventStatus::ACCEPTED
-					);
+					*e = Some(last_en.clone());
 					// Set read by for both parent evNode and txnNode.
-					last.0.upgrade().unwrap().add_read_by(&en);
+					last_en.upgrade().unwrap().add_read_by(en);
+					// Write to correspondent
+					let mut wr = self.read_from_by_state(state).write(); 
+					if (*wr).is_none() {
+						*wr = Some(last_tn.clone());
+					}
 				} else {
 					let mut e = en.read_from[idx].write();
 					*e = None;
-					en.is_read_from_fulfilled[idx].store(true);
 				}
 			});
 			drop(last_modify_hashmap);
 			if en.has_write {
 				let self_arc =  en.txn.upgrade().unwrap().clone();
-				let mut last_modify_hashmap = tb.write().unwrap();
 				// Set self.cover and parent self.covered_by.
-				if let Some(Some(last)) = last_modify_hashmap.get(en.write.as_str()){
+				let last_modify_hashmap = tb.read().unwrap();
+				let last_option = last_modify_hashmap.get(&en.write)
+					.unwrap_or_else(|| 
+						{panic!("State has no slot in last_modify_hashmap: {:?}", &en.write)}
+					);
+				if let Some((_, last_txn)) = last_option {
 					// Someone wrote. record and update list.
 					let mut re = self.cover[&en.write].write(); // Clone and remove later.
-					*re = Some(last.1.clone());
-					last.1.add_covered_by(&en.write, &self_arc);
-				} else {
-					// Update to state_last_modify anyway.
-					/*
-						Here we assign a reference count to prevent the txn removed. 
-						Explicitly clone.
-					*/
-					last_modify_hashmap.insert(en.write.clone(), Some((Arc::downgrade(en),self_arc)));
-				};
+					*re = Some(last_txn.clone());
+					last_txn.add_covered_by(&en.write, &self_arc);
+				}
+				// Update to state_last_modify anyway.
+				/*
+					Here we assign a reference count to prevent the txn removed. 
+					Explicitly clone.
+				*/
+				drop(last_modify_hashmap);
+				let mut last_modify_hashmap = tb.write().unwrap();
+				last_modify_hashmap.insert(en.write.clone(), Some((Arc::downgrade(en),self_arc)));
 			}
 		});
 	}
@@ -180,13 +229,18 @@ impl TxnNode{
 	}
 
 	// Add_covered_by adds txn that writes the same key as constraint.
-	pub fn add_covered_by(&self, key: &String, tn: &Arc<TxnNode>) {
+	pub fn add_covered_by(&self, key: &String, son: &Arc<TxnNode>) {
 		debug_assert!({ self.covered_by // impossible to be added twice. So this slot must be none.
 			.read().unwrap()
 			.get(key).is_none()
 		});
 		self.covered_by.write().unwrap()
-			.insert(key.clone(), Some(Arc::downgrade(tn)));
+			.insert(key.clone(), Some(son.clone()));
+	}
+
+	// Add_read_by adds txn that reads my result.
+	pub fn read_from_by_state(&self, state: &str) -> &ShouldSyncCell<Option<Arc<TxnNode>>>{
+		&self.read_from[self.read_from_index_map[state]]
 	}
 
 	pub fn no_waiting(&self) -> bool {
@@ -199,7 +253,7 @@ impl TxnNode{
 			self.status.load() == TxnStatus::WAITING
 				|| self.status.load() == TxnStatus::ABORTED // Aborted transaction also passes commitment to descedants.
 		);
-		// Find father himself in the son's reading list.
+		// Find father himself in the son's reading list. To decrease the uncommitted parents count.
 		if !self.read_from.iter().any(|tn_op	| {
 			if tn_op.read().as_ref().is_some_and(|tn| tn.ts == father.ts ) {
 				// Set to None.
@@ -210,7 +264,7 @@ impl TxnNode{
 				false
 			}
 		}) {
-			println!("committed father not in son read_from.");
+			panic!("committed father not in son read_from.");
 		}
 		// debug_assert!(self.uncommitted_parents.load() > 0);
 		// self.uncommitted_parents.fetch_sub(1);
@@ -246,23 +300,15 @@ impl TxnNode{
 
 		// Continue to apply other changes.
 		
-		// Record decrement on sons.
-		for son in self.read_by.read().unwrap().iter() {
-			let node = son.as_ref().unwrap().upgrade().unwrap(); // Son could not have been released. 
-			node.father_committed(self);
-			// We don not think a network situation would allow so much txn linked to cause stack overflow. So recursion here.
-			node.try_commit();
-		}
-
-		// Release unused reference to release parentsRemove the linking to decrease reference count in either condition.
-		self.read_from.iter().for_each(|parent| {
-			debug_assert!({
-				parent.read().is_none() 
-				 || parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
-			}); // Could not be waiting or garbaged.
-			let mut wp = parent.write();
-			*wp = None;
-		});
+		// At this time read from should all be none.
+		// self.read_from.iter().for_each(|parent| {
+		// 	debug_assert!({
+		// 		parent.read().is_none() 
+		// 		 || parent.read().as_ref().unwrap().status.load() == TxnStatus::COMMITED
+		// 	}); // Could not be waiting or garbaged.
+		// 	let mut wp = parent.write();
+		// 	*wp = None;
+		// });
 		self.cover.iter().for_each(|(_, w_parent)|{
 			debug_assert!({
 				w_parent.read().is_none() 
@@ -273,76 +319,24 @@ impl TxnNode{
 		});
 
 		debug_assert!({
-			self.read_from.iter().all(|r| r.read().is_none()) 
-			&& self.cover.iter().all(|(_, r)| r.read().is_none()) 
+			self.read_from.iter().all(|state| state.read().is_none()) 
+			&& self.cover.iter().all(|(_, state)| state.read().is_none()) 
 		});
 
 		// Inform the runtime that the txn has been processed.
 		// TODO. Judge by self.status to reply ILLEGAL, SUCCESS, or what.
 		ffi::txn_finished_sign(self.txn_req_id);
 
+		// Perform commitment on dependent sons. This step should be the last part of commitment, since we need commitment to be in order.
+		for son in self.read_by.read().unwrap().iter() {
+			let node = son.as_ref().unwrap(); // Son should not have been released. 
+			node.father_committed(self);
+			// We do not think a network situation would allow so much txn linked to cause stack overflow. So recursion here.
+			node.try_commit();
+		}
+
 		true
 	}
-
-	// // Judge if it's garbage. If it is, remove the related versions from database.
-	// pub fn is_garbage(&self) -> bool {
-	// 	/*
-	// 		When to trigger this function:
-	// 		1. When any of its descendants transaction commits.
-	// 		2. When any of its descendants aborted and nested descendants committed.
-	// 		When we can mark it as garbage:
-	// 		1. All the state it writes has been covered by other committed transaction. 
-	// 			If any of these transaction aborted, search down its writing covering descendants.
-	// 		2. All the transactions reading what it produced has been aborted or committed.
-	// 		This function is:
-	// 		1. Thread safe to call.
-	// 		2. Would not be effected by appending new transactions.
-	// 		3. Would not be effected by removing parents.
-	// 		4. Would not be effected by atomic abortion.
-	// 	 */
-	// 	match self.status.load() {
-	// 		TxnStatus::COMMITED => {}
-	// 		_ => return false
-	// 	}
-	// 	// Check writing coverage.
-	// 	for (key, w_son) in self.covered_by.read().unwrap().iter() { 
-	// 		let node = w_son.as_ref().unwrap().upgrade().unwrap(); // No descendants should be released before me.
-	// 		match node.status.load() {
-	// 			TxnStatus::COMMITED => {},
-	// 			TxnStatus::ABORTED => {
-	// 				// Search down in iteration.
-	// 				let mut c = node;
-	// 				let mut has_end = false;
-	// 				loop {
-	// 					let d = c.covered_by.read().unwrap().get(key);
-	// 					match d {
-	// 						None => {return false}, // Nobody's covering writing this key.
-	// 						Some(n) => {
-	// 							let n = n.as_ref().unwrap().upgrade().unwrap(); // No descendants should be released before him.
-	// 							match n.status.load() {
-	// 								TxnStatus::COMMITED => { has_end = true; break },
-	// 							    TxnStatus::ABORTED => { c = n; continue }, // Search next iteration.
-	// 								_ => { return false }
-	// 							}
-	// 						}
-	// 					}
-	// 				}
-	// 			},
-	// 			_ => return false
-	// 		}
-	// 	}
-	// 	// Check reading coverage.
-	// 	for son in self.read_by.read().unwrap().iter() {
-	// 		let node = son.as_ref().unwrap().upgrade().unwrap(); // No descendants should be released before me.
-	// 		match node.status.load() {
-	// 			TxnStatus::COMMITED => {},
-	// 			TxnStatus::ABORTED => {},
-	// 			_ => {return false}
-	// 		}
-	// 	}
-	// 	// Should be marked true.
-	// 	true
-	// }
 
 	// Transaction abortion. 
 	pub fn abort(&self) {
@@ -364,6 +358,7 @@ impl TxnNode{
 				if e.status.load() != EventStatus::ABORTED { e.abort() }
 			);
 		self.unfinished_events.store(0);
+		// Abortion txn also commits. Since the later transactions dates back to check if commitable.
 		self.try_commit();
 	}
 
@@ -380,14 +375,3 @@ impl TxnNode{
 // 		}
 // 	}
 // }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TxnStatus {
-	// Waiting marks the unfinished dependent txns counts.
-	WAITING,	
-	// Committed returns value. 
-	// Remind: To pass commitment down, we'll also mark aborted txn to be committed when its parents all committed.
-	COMMITED, 
-	ABORTED,
-	GARBAGE,
-}

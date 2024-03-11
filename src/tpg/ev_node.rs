@@ -34,7 +34,7 @@ pub struct EvNode{
 	pub status: AtomicCell<EventStatus>,
 	
 	// A vector is used to solve the multi-thread visiting.
-	pub(in crate::tpg) is_read_from_fulfilled: Vec<AtomicCell<bool>>,
+	pub is_read_from_fulfilled: Vec<AtomicCell<bool>>,
 
 	// States to read.
 	pub reads: Vec<String>,
@@ -144,7 +144,7 @@ impl EvNode {
 		) // For now, let param_count as the same as query.
 	}
 
-	pub fn accepted(&self) {
+	pub fn accept(&self) {
 		/*
 			This function is just single threaded:
 			- Only one thread calling for one EvNode each time.
@@ -186,16 +186,18 @@ impl EvNode {
 			.read().unwrap()
 			.iter().any(
 				|to| to.as_ref().is_some_and(
-					|ref tn| Arc::ptr_eq(&tn.upgrade().unwrap(), &son.txn.upgrade().unwrap())
+					|ref tn| Arc::ptr_eq(&tn, &son.txn.upgrade().unwrap())
 			)) // Check if already inside.
 		{
 			self.txn.upgrade().unwrap().read_by
 				.write().unwrap()
-				.push(Some(son.txn.clone()))
+				.push(Some(son.txn.upgrade().unwrap().clone()))
 		}
 	}
 
 	pub fn get_next_option_push_others_ready(&self, pipe: &Sender<Arc<EvNode>>) -> Option<Arc<EvNode>> {
+		debug_assert!(self.status.load() == EventStatus::ACCEPTED);
+
 		// Traverse sons to inform acceptance, and return the next node.
 		let next_candidates: Vec<Arc<EvNode>> = (*self.read_by.read().unwrap())
 			.iter().enumerate().filter(|(idx, node)| 
@@ -224,7 +226,18 @@ impl EvNode {
 					pipe.send(evnode.clone()).unwrap();
 				}
 			}
-			Some(min_evnode.unwrap().clone())
+			// This evnode has been selected as min. Try lock with CAS to claim that node.
+			match min_evnode.unwrap().status.compare_exchange(EventStatus::WAITING, EventStatus::CLAIMED) {
+				Ok(_) =>  {
+					Some(min_evnode.unwrap().clone())
+				},
+				// Has been claimed by Construct threads.
+				Err(state) => {
+					debug_assert!(state == EventStatus::INQUEUE);
+					// Possible to be others. If it's enqueued long time ago and be claimed by others. But rare.
+					None
+				}
+			}
 		} else {
 			None
 		}
@@ -234,8 +247,6 @@ impl EvNode {
 		Abort the operation and then notify the whole transaction.
 		This function called when:
 		- CLAIMED evnode and WAITING transaction.
-		When abort we:
-		1. Mark 
 	 */
 	pub fn notify_txn_abort(&self){
 		debug_assert!(self.status.load() == EventStatus::CLAIMED 
@@ -260,21 +271,14 @@ impl EvNode {
 		2.1 Cover the staged state result with the nearest copy of state. (Needs to be Reenterable. TODO.)
 		3. Decrease the denepdency for its read_by nodes by 1, possibly trigger the redo of these objects. (Reenterable, atomic so thread safe)
 		For all those operations, we use atomic EvNode.status change as the border to execute redo or stop writing.
-		- If an operation has been marked CLAIMED, we believe its state change has not happened yet (TODO). Abortion thread set it to be WAITING to stop writing but no other intervention.
+		- If an operation has been marked INQUEUE, we believe no change has ever happened. Just set it to be WAITING.
+		- If an operation has been marked CLAIMED, reset it to be WAITING may cause two threads claiming one evnode at the same time. So we stop and loop waiting. It must be rare condition.
 		- If an operation has been marked ACCEPTED, we believe its state change has happened. So we do recover works.
 		- If an operation has been marked ABORTED, we believe its state has been properly handled. We do nothing about it.
 	 */
 	pub	fn abort(&self) {
-		debug_assert!(
-			// TODO. Rethink: if WAITING would receive?
-			self.status.load() == EventStatus::CLAIMED
-				|| self.status.load() == EventStatus::ABORTED
-				|| self.status.load() == EventStatus::ACCEPTED
-		);
-		debug_assert!(
-			self.txn.upgrade().unwrap().status.load() == TxnStatus::ABORTED 
-				|| self.txn.upgrade().unwrap().status.load() == TxnStatus::WAITING
-		);
+		debug_assert!( self.status.load() != EventStatus::CONSTRUCT ); // A node can be aborted anytime but not construct. The whole txn is not ready to work.
+		debug_assert!( self.txn.upgrade().unwrap().status.load() == TxnStatus::ABORTED );
 		self.status.store(EventStatus::ABORTED);
 		// TODO. Preallocate the vector.
 		let mut stack: Vec<Arc<EvNode>> = Vec::with_capacity(20);
@@ -288,37 +292,49 @@ impl EvNode {
 					EventStatus::ACCEPTED => {
 						// State shift has been made. Recover the state shift and dive in.
 						node.status.store(EventStatus::WAITING);
-						// Reset later dependent nodes.
-						debug_assert!(node.is_read_from_fulfilled[idx].swap(false)); // Orginally must be true. Set false now.
+						let origin = node.is_read_from_fulfilled[idx].swap(false);
+						debug_assert!(origin); // Orginally must be true. Set false now.
 						simpledb::DB.get().unwrap()
 							.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
+						// Reset later dependent nodes.
 						stack.push(node); // It could produce wrong result to be used by sons.
 					}
+					EventStatus::ABORTED => continue, // Ends here. Has been operated by other abortion thread.
 					EventStatus::CLAIMED => {
-						// No state shift happened. Withdraw readiness.
-						node.status.store(EventStatus::WAITING);
-						debug_assert!(node.is_read_from_fulfilled[idx].swap(false)); // Orginally must be true. Set false now.
+						println!("Event Abortion: Rare condition. A claimed node needs to be reset.");
+						// Busy wait till that thread release Event. 
+						while node.status.load() != EventStatus::CLAIMED {}
 					},
 					EventStatus::WAITING => {
 						// No state shift happened. No change.
 						debug_assert!(node.is_read_from_fulfilled[idx].load() == false); // Not executed yet.
 						continue;
 					},
-					EventStatus::ABORTED => continue, // Ends here. Has been operated by other abortion thread.
-					EventStatus::INQUEUE | EventStatus::CONSTRUCT => panic!("bug."),
+					EventStatus::INQUEUE => {
+						node.status.store(EventStatus::WAITING); // Just set waiting.
+						let origin = node.is_read_from_fulfilled[idx].swap(false);
+						debug_assert!(origin); // Orginally must be true. Set false now.
+						// Nothing to push. It's not done yet.
+					}
+					EventStatus::CONSTRUCT => panic!("bug."),
 				}
 			}
 		};
+		// Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
 		if self.has_write{
 			simpledb::DB.get().unwrap()
-				.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); // Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
+				.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); 
 		}
 	}
 
 	// Notification from parents in read_from.
 	fn parent_accepted(&self, idx: usize) {
-		debug_assert!(self.status.load() == EventStatus::WAITING
-		 || self.status.load() == EventStatus::CONSTRUCT );
+		debug_assert!(
+			match self.status.load(){
+				EventStatus::CONSTRUCT | EventStatus::WAITING | EventStatus::INQUEUE => true,
+				_ => { println!("{:?}", self.status.load()); false }
+			}
+		);
 	    self.is_read_from_fulfilled[idx].swap(true);
 	}
 
