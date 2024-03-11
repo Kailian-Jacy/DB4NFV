@@ -66,7 +66,11 @@ cat <<EOF > config.json
 EOF
 ```
 
-To run this system, make sure you have `$vnf_threads_num + $worker_threads_num + 1 [ + 1 (if monitor enabled)]` bindable cores.
+To run this system, make sure you have
+ `$vnf_threads_num + $worker_threads_num + 1 [+1 (if monitor enabled)]` 
+ bindable cores. 
+
+Example VNF is under `DB4NFV/runtime/SL` directory. Configuration for such VNF are also under that directory. Like port to expose etc.
 
 ```csv
 bufferSize,128
@@ -83,7 +87,6 @@ debug,true
 monitorInterval,200
 ```
 
-Example VNF is under `DB4NFV/runtime/SL` directory. Configuration for such VNF are also under that directory. Like port to expose etc.
 
 Run with:
 ```bash
