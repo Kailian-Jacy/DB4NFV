@@ -133,7 +133,7 @@ pub fn execute_thread(tid: usize){
 					ts: utils::current_time_ns(),
 					content: format!("{},accept,{},{}", evn.txn.upgrade().unwrap().txn_req_id, utils::current_time_ns(), evn.idx),
 				});
-				monitor::MONITOR.get().unwrap()[0].inc("evnode.accept");
+				monitor::MONITOR.get().unwrap()[tid].inc("evnode.accept");
 			}
 			evn.write_back(&v, DB.get().unwrap());
 			evn_option_next = evn.get_next_option_push_others_ready(&TPG.get().unwrap().ready_queue_in);

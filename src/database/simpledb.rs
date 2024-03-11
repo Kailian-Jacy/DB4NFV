@@ -1,5 +1,6 @@
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use crate::config::CONFIG;
 use crate::database::api;
 use crate::ds::ringbuf::{self, RingBuf};
@@ -52,7 +53,7 @@ struct Table {
 	records: Vec<ringbuf::RingBuf<DataPoint<Vec<u8>>>>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 struct DataPoint<T: Default> {
 	ts: u64,
 	value: T,
@@ -75,7 +76,7 @@ impl Default for DataPointState {
 	}	
 }
 
-impl<T: Default + Clone> ringbuf::RingBufContent for DataPoint<T> {}
+impl<T: Default + Clone > ringbuf::RingBufContent for DataPoint<T> {}
 
 impl Table {
 	fn empty_init(keys: Vec<&str>) -> Self {
@@ -190,18 +191,28 @@ impl Table {
 	fn release_version(&self, key: &str, ts: u64){
 		// Remove datapoint from ringbuf.
 		debug_assert!(self.states.contains_key(key));
-		debug_assert!(self.records[self.states[key]].peek(0).unwrap().ts == ts); // Should be the very first of the key.
+		debug_assert!(
+			if !self.records[self.states[key]].peek(0).unwrap().ts == ts{
+				self.records[self.states[key]].dump();
+				false
+			} else {
+				true
+			}
+		); // Should be the very first of the key.
 		self.records[self.states[key]].discard_before(1);
 	}
 
 	fn get_version(&self, key: &str, ts: u64) -> Vec<u8>{
 		// Get datapoint from ringbuf.
 		debug_assert!(self.states.contains_key(key));
-		let obj = self.records[self.states[key]]
-			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)))
-			.unwrap(); // Shoud not be none.
-		debug_assert!(obj.state == DataPointState::NORMAL);
-		obj.value.clone()
+		let obj_op = self.records[self.states[key]]
+			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
+		if obj_op.is_none(){
+			self.records[self.states[key]].dump();
+			assert!(false);   // Shoud not be none.
+		}
+		debug_assert!(obj_op.as_ref().unwrap().state == DataPointState::NORMAL);
+		obj_op.unwrap().value.clone()
 	}
 }
 

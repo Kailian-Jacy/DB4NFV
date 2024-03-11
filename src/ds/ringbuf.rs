@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::sync::RwLock;
 use std::mem;
 use std::cmp::Ordering;
@@ -9,7 +10,9 @@ use crossbeam::atomic::AtomicCell;
 	- Thread safe when visiting different cell.
 	- High performance from cache alignment and lockless.
  */
-pub struct RingBuf<T: RingBufContent> {
+pub struct RingBuf<T>
+	where T: RingBufContent + Debug
+{
 	pub cap: usize,
 	start: AtomicCell<usize>,
 	end: AtomicCell<usize>,
@@ -26,7 +29,9 @@ pub struct RingBuf<T: RingBufContent> {
  */
 pub trait RingBufContent: Clone + Default {}
 
-impl<T: RingBufContent> RingBuf<T> {
+impl<T> RingBuf<T>
+	where T: RingBufContent + Debug
+{
 	#[inline]
 	pub fn end(&self) -> usize {
 		self.end.load()
@@ -112,6 +117,13 @@ impl<T: RingBufContent> RingBuf<T> {
 	    } else {
 			Some(self.buf[(self.start() + idx) % self.cap].read().unwrap().clone())
 	    }
+	}
+	// Dump used for debugging. Print content for checking;
+	pub fn dump(&self){
+		println!("ringbuf.start {}; ringbuf.end {}.", self.start(), self.end());
+		for ele in (self.start()..self.end()).into_iter() {
+			println!("ringbuf content {}: {:?}", ele, self.peek(ele).unwrap());
+		}
 	}
 	// Search back. Used when dating back to last valid version of state.
 	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {

@@ -145,8 +145,8 @@ pub fn dump_log(history_l: &mut File, cnt_l: &mut File){
 	MONITOR.get().unwrap().iter().enumerate().for_each(
 		|(tid, tl)|{
 			tl.counter.iter().for_each(|(k, v)|{
-				if let Err(err) = history_l.write_fmt(format_args!(
-					"{},{:?},{},{}", 
+				if let Err(err) = cnt_l.write_fmt(format_args!(
+					"{},{:?},{},{}\n", 
 					tid,tl.role,k,unsafe{*v.get()}
 				)) {
 					eprintln!("Failed to write to count log file {}", err);
@@ -154,8 +154,8 @@ pub fn dump_log(history_l: &mut File, cnt_l: &mut File){
 			});
 			let h =  unsafe { &*tl.history.get() };
 				h.logs[h.written..].iter().for_each(|m|{
-				if let Err(err) = cnt_l.write_fmt(format_args!(
-					"{},{:?},{},{}", 
+				if let Err(err) = history_l.write_fmt(format_args!(
+					"{},{:?},{},{}\n", 
 					tid,tl.role,m.ts,m.content
 				)){
 					eprintln!("Failed to write to history log file {}", err);
