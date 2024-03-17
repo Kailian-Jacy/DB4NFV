@@ -42,7 +42,7 @@ pub struct EvNode{
 	pub has_write: bool,
 
 	// For debugging.
-	has_storage_slot: bool,
+	has_storage_slot: ShouldSyncCell<bool>,
 
 	// Router to execute function.
 	pub idx: i32,
@@ -91,7 +91,7 @@ impl EvNode {
 
 				idx,
 				has_write: event.has_write,
-				has_storage_slot: false,
+				has_storage_slot: ShouldSyncCell::new(false),
 			})
 		}
 	}
@@ -145,7 +145,7 @@ impl EvNode {
 	}
 
 	pub fn write_back<T: Database>(&self, value: &Vec<u8>, db: &T) {
-		if self.has_storage_slot {
+		if *self.has_storage_slot.read() {
 			db.write_version(
 				"default", 
 				self.write.as_str(), 
@@ -159,6 +159,8 @@ impl EvNode {
 				self.txn.upgrade().unwrap().ts, 
 				value,
 			);
+			let mut w = self.has_storage_slot.write();
+			*w = true;
 		}
 	}
 

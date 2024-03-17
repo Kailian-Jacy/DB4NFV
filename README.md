@@ -117,7 +117,7 @@ One is about `deposit(amount)`:
 {
 	"read": ["balance"], // We need to read original balance.
 	"write": "balance",  // We will write new balance.
-	deposit_sa_udf,  // Handle function to perform on them.
+	deposit_handlefunc,  // Handle function to perform on them.
 }
 ```
 
@@ -130,14 +130,13 @@ Another is `transfer(from,to,amount)`:
 			"event": "src_transfer_sa",
 			"reads": ["balance"], // read original balance.
 			"write": "balance",  // Write new balance.
-			src_transfer_sa_udf
+			src_transfer_handlefunc
 		},
 		{
 			"event": "dst_receive_sa",
 			"reads": ["balance"], // read original balance.
 			"write": "balance",  // Write new balance.
-			"dst_transfer_sa",
-			dest_transfer_sa_udf
+			dest_receive_handlefunc
 		}
 	]
 }
@@ -146,6 +145,7 @@ Another is `transfer(from,to,amount)`:
 And define the corresponding logic to each handle function to complete the logic. The function works in `y = f(x1, x2, x3...)` style. Namely, you read multiple states in, and write one state.
 
 Here is the example of deposit handler:
+
 ```C++
 int deposit_sa_udf(vnf::ConnId& connId, Context &ctx, char * raw, int length)
 {

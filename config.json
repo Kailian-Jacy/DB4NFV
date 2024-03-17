@@ -9,5 +9,5 @@
   "max_state_records": 10000,
   "verbose": true,
   "monitor_enabled": true,
-  "log_dir": "."
+  "log_dir": "./perf"
 }
