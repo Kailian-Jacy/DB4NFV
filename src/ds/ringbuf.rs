@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::ops::Index;
 use std::sync::RwLock;
 use std::mem;
 use std::cmp::Ordering;
@@ -13,9 +14,9 @@ use crossbeam::atomic::AtomicCell;
 pub struct RingBuf<T>
 	where T: RingBufContent + Debug
 {
-	pub cap: usize,
+	cap: usize,
 	start: AtomicCell<usize>,
-	end: AtomicCell<usize>,
+	end: AtomicCell<usize>, // Point to the first place that is empty.
 	// Now we are using RwLock. Since Refcell with sync is RwLock.
 	// TODO. We consider to replace it with unsafe code. Copy it out, assign to the follower, and then set without Lock.
 	buf: Vec<RwLock<T>>,
@@ -33,11 +34,11 @@ impl<T> RingBuf<T>
 	where T: RingBufContent + Debug
 {
 	#[inline]
-	pub fn end(&self) -> usize {
+	fn end(&self) -> usize {
 		self.end.load()
 	}
 	#[inline]
-	pub fn start(&self) -> usize {
+	fn start(&self) -> usize {
 		self.start.load()
 	}
 	// Total memory usage.
@@ -46,15 +47,15 @@ impl<T> RingBuf<T>
 		self.cap * mem::size_of::<T>()
 	}
 	pub fn len(&self) -> usize {
-		debug_assert!(self.end() != self.start());
-		if self.end() > self.start() {
+		if self.end() >= self.start() {
 			(self.end() - self.start()) as usize
 		} else {
 			(self.cap - self.start() + self.end()) as usize
 		}
 	}
-	pub fn capacity(&self) -> usize	{
-		self.buf.capacity()
+	#[inline]
+	pub fn cap(&self) -> usize	{
+		self.cap
 	}
 	// Won't panic if full2panic is not true
     pub fn new(cap: usize, full2panic: Option<bool>) -> Self {
@@ -67,7 +68,7 @@ impl<T> RingBuf<T>
         Self {
             cap: cap,
             start: AtomicCell::new(0),
-            end: AtomicCell::new(1),
+            end: AtomicCell::new(0),
             buf: v,
 			full2panic: full2panic.unwrap_or(false),
         }
@@ -87,6 +88,10 @@ impl<T> RingBuf<T>
 		// 		true
 		// 	}
 		// });
+		*self.buf[self.end() as usize].write().unwrap() = item;
+		self.end.store((self.end() + 1) % self.cap as usize);
+
+		// End should be smaller than start. When end = start, that means all full or all empty.
 		if self.end() == self.start() {
 			if self.full2panic {
 				panic!("ring buf full.")
@@ -94,54 +99,78 @@ impl<T> RingBuf<T>
 				println!("[CRITICAL] ring buf full.")
 			}
 		}
-		*self.buf[self.end() as usize].write().unwrap() = item;
-		self.end.store((self.end() + 1) % self.cap as usize);
 	}
+
 	// Pop last.
 	pub fn pop(self) -> Option<T> {
-	    if self.start() + 1 == self.end() {
+	    if self.start() == self.end() {
 			None
 	    } else {
-			let r = Some(self.buf[(self.end() - 1) & self.cap as usize].read().unwrap().clone());
+			let r = Some(self.buf[(self.end() - 1) % self.cap as usize].read().unwrap().clone());
 			if self.end() == 0 {
-				self.end.swap(self.cap);
-			} 
-			self.end.fetch_sub(1);
+				self.end.swap(self.cap - 1);
+			}  else {
+				self.end.fetch_sub(1);
+			}
 		    r
 	    }
 	}
-	// Copy to take a look at the last.
-	pub fn peek(&self, idx: usize) -> Option<T> {
-	    if self.end() - self.start() - 1 < idx {
+
+	// We tent not to provide index api. Since the starting point is drifting. 
+	// We suggest using timestamp to search.
+	// pub fn index(&self, idx: usize) -> Option<&RwLock<T>> {
+	//     // if self.end() - self.start() - 1 < idx {
+	//     if ( self.start() + idx ) % self.cap >= self.end() {
+	// 		None
+	//     } else {
+	// 		Some(self.buf.index((self.start() + idx) % self.cap))
+	//     }
+	// }
+
+	// Clone to peek the head
+	pub fn first_clone(&self) -> Option<T> {
+		if self.start() == self.end() {
 			None
-	    } else {
-			Some(self.buf[(self.start() + idx) % self.cap].read().unwrap().clone())
-	    }
+		} else {
+			Some(self.buf[self.start()].read().unwrap().clone())
+		}
 	}
+
+	// Clone to peek the tail
+	pub fn last_clone(&self) -> Option<T> {
+		if self.start() == self.end() {
+			None
+		} else {
+			Some(self.buf[self.end() - 1].read().unwrap().clone())
+		}
+	}
+
 	// Dump used for debugging. Print content for checking;
 	pub fn dump(&self){
 		println!("ringbuf.start {}; ringbuf.end {}.", self.start(), self.end());
 		for ele in (self.start()..self.end()).into_iter() {
-			println!("ringbuf content {}: {:?}", ele, self.peek(ele).unwrap());
+			println!("ringbuf content {}: {:?}", ele, self.buf[ele].read().unwrap());
 		}
 	}
 	// Search back. Used when dating back to last valid version of state.
-	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, mut from_idx: usize) -> Option<&RwLock<T>> {
+	pub fn search_back(&self, f: Box<dyn Fn(&T) -> bool>, from_idx: usize) -> Option<&RwLock<T>> {
+		let mut idx = (self.start() + from_idx) % self.cap;
 		loop {
-			if f(self.buf[(self.start() + from_idx) % self.cap].read().as_ref().unwrap()) {
+			if f(self.buf[idx].read().as_ref().unwrap()) {
 				// Found.
-				return Some(&self.buf[(self.start() + from_idx) % self.cap])
+				return Some(self.buf.index(idx));
 			} else {
 				// Not found
-				if from_idx == 0 { return None }
-				from_idx = from_idx - 1;
+				if idx == self.start() { return None }
+				if idx == 0 { idx = self.cap - 1 }
+					else { idx = idx - 1 }
 			}
 		}
 	}
 	// Truncate from the tail.
 	pub fn truncate_from(&self, index: usize) {
 		debug_assert!(index < self.len() as usize);
-		self.end.store((&self.start() + index) % &self.cap);
+		self.end.store((self.start() + index) % self.cap);
 	}
 	// Truncate from the head.
 	pub fn discard_before(&self, index: usize) {

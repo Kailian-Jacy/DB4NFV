@@ -67,12 +67,12 @@ enum DataPointState {
 	// DEFAULT,
 	NORMAL,
 	// ABORTED,	// Aborted modes, but copying last valid result. TODO: Possibly remove it?
-	SHOULDBEEMPTY,
+	EMPTY, // resetted or not used.
 }
 
 impl Default for DataPointState {
 	fn default() -> Self {
-		DataPointState::NORMAL
+		DataPointState::EMPTY
 	}	
 }
 
@@ -109,7 +109,7 @@ impl Table {
 		debug_assert!({
 			obj.is_some() && obj.as_ref().unwrap().state == DataPointState::NORMAL
 		});
-		obj.unwrap().state = DataPointState::SHOULDBEEMPTY;
+		obj.unwrap().state = DataPointState::EMPTY;
 	}
 
 	// Copy last version happens when operations are aborted, so it fetches the resulf of last valid record.
@@ -124,16 +124,18 @@ impl Table {
 		let r = &self.records[self.states[key]];
 		// Find position of the current.
 		if !has_slot {
-			// Search back.
-			let to_copy_op = r.search_back( Box::new(
-					|t| {t.state == DataPointState::NORMAL}
-				), r.len());
-			let value = if to_copy_op.is_none() {
-				// Dated back to 0. Use default value.
-					vec![0]
-				} else {
-					to_copy_op.unwrap().read().unwrap().value.clone()
+			// TODO. Default value.
+			let mut value = vec![0];
+			if r.len() != 0 {
+				// Search back.
+				let to_copy_op = r.search_back( Box::new(
+						|t| {t.state == DataPointState::NORMAL}
+					), r.len() - 1); // The last index of ringbuf is len-1.
+				if to_copy_op.is_some() {
+					value = to_copy_op.unwrap().read().unwrap().value.clone()
 				};
+
+			}
 			self.push_version(
 				key, ts, &value
 			);
@@ -168,7 +170,7 @@ impl Table {
 		debug_assert!(value.len() != 0);
 		debug_assert!({ // Make sure is increasing order.
 			let t = &self.records[self.states[key]];
-			let n = t.peek(t.len());
+			let n = t.last_clone();
 			n.is_none()	|| n.is_some_and(|dp| dp.ts < ts)
 		});
 		// Create a new DataPoint with the provided timestamp and value.
@@ -190,7 +192,7 @@ impl Table {
 		debug_assert!({
 			obj_ref.unwrap().1
 				.read().unwrap()
-				.state == DataPointState::SHOULDBEEMPTY
+				.state == DataPointState::EMPTY
 		});
 		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
 		obj_ref.unwrap().1.write().unwrap().value = value.clone();
@@ -200,13 +202,17 @@ impl Table {
 		// Remove datapoint from ringbuf.
 		debug_assert!(self.states.contains_key(key));
 		debug_assert!(
-			if !self.records[self.states[key]].peek(0).unwrap().ts == ts{
+			if !self.records[self.states[key]].first_clone().unwrap().ts == ts{
 				self.records[self.states[key]].dump();
 				false
 			} else {
 				true
 			}
 		); // Should be the very first of the key.
+		let mut w = self.records[self.states[key]].ref_as_ordered(
+			Box::new(move |dp| dp.ts.cmp(&ts) )
+		).expect("bug").1.write().unwrap();
+		w.state = DataPointState::EMPTY;
 		self.records[self.states[key]].discard_before(1);
 	}
 
