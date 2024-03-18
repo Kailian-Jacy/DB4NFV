@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::path::PathBuf;
 use std::env;
 use std::thread;
@@ -87,7 +86,7 @@ fn main() {
     // Register a handler for graceful shutdown
     ctrlc::set_handler(move || {
         println!("Exiting. Please wait till all tasks finished.");
-        GRACEFUL_SHUTDOWN.store(true, Ordering::SeqCst);
+        unsafe { GRACEFUL_SHUTDOWN = true };
     }).expect("Error setting Ctrl-C handler");
 
     // Main thread work as construct thread.

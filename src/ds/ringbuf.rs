@@ -91,11 +91,11 @@ impl<T> RingBuf<T>
 			if self.full2panic {
 				panic!("ring buf full.")
 			} else {
-				println!("[WARNING] ring buf full.")
+				println!("[CRITICAL] ring buf full.")
 			}
 		}
 		*self.buf[self.end() as usize].write().unwrap() = item;
-		self.end.swap((self.end() + 1) % self.cap as usize);
+		self.end.store((self.end() + 1) % self.cap as usize);
 	}
 	// Pop last.
 	pub fn pop(self) -> Option<T> {
@@ -162,41 +162,51 @@ impl<T> RingBuf<T>
 	{
 		Some(self.ref_as_ordered(f)?.1.read().unwrap().clone())
 	}
+	// Use linear searching to debug. No evidance show binary search error.
+	// pub fn ref_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
+	// 	if self.start() < self.end() {
+    //         self.binary_search(self.start(), self.len(),  &f)
+    //     } else if self.start() > self.end() {
+    //         let (first_half, _) = self.buf.split_at(self.end());
+    //         let first_half_len = first_half.len();
+    //         let found = self.binary_search(0, first_half_len, &f);
+    //         if found.is_some() {
+    //             found
+    //         } else {
+	// 			let (_, second_half) = self.buf.split_at(self.end());
+	// 			let second_half_len = second_half.len();
+    //             self.binary_search(self.start(), second_half_len, &f)
+    //         }
+    //     } else {
+	// 		panic!("bug.")
+	// 	}
+	// }
 	pub fn ref_as_ordered(&self, f: Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
-		if self.start() < self.end() {
-            self.binary_search(self.start(), self.len(),  &f)
-        } else if self.start() > self.end() {
-            let (first_half, _) = self.buf.split_at(self.end());
-            let first_half_len = first_half.len();
-            let found = self.binary_search(0, first_half_len, &f);
-            if found.is_some() {
-                found
-            } else {
-				let (_, second_half) = self.buf.split_at(self.end());
-				let second_half_len = second_half.len();
-                self.binary_search(self.start(), second_half_len, &f)
-            }
-        } else {
-			panic!("bug.")
+		let (start, len) = (self.start(), self.len());
+		for idx in 0..len {
+			if f(self.buf[start + idx].read().as_ref().unwrap()) == Ordering::Equal {
+				return Some((idx, &self.buf[start + idx]))
+			}
 		}
+		None
 	}
-	fn binary_search(&self, start_idx: usize, len: usize, f: &Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
-        let mut left = 0;
-        let mut right = len - 1;
+	// fn binary_search(&self, start_idx: usize, len: usize, f: &Box<dyn Fn(&T) -> std::cmp::Ordering>) -> Option<(usize, &RwLock<T>)> {
+    //     let mut left = 0;
+    //     let mut right = len - 1;
 
-        while left <= right {
-            let mid = left + (right - left) / 2;
-            let idx = (start_idx + mid) % self.cap;
-            let cmp = f(&self.buf[idx].read().unwrap());
+    //     while left <= right {
+    //         let mid = left + (right - left) / 2;
+    //         let idx = (start_idx + mid) % self.cap;
+    //         let cmp = f(&self.buf[idx].read().unwrap());
 
-            match cmp {
-                Ordering::Equal => return Some((idx, &self.buf[idx])),
-                Ordering::Greater => right = mid - 1,
-                Ordering::Less => left = mid + 1,
-            }
-        }
-        None
-    }
+    //         match cmp {
+    //             Ordering::Equal => return Some((idx, &self.buf[idx])),
+    //             Ordering::Greater => right = mid - 1,
+    //             Ordering::Less => left = mid + 1,
+    //         }
+    //     }
+    //     None
+    // }
 }
 
 

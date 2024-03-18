@@ -21,6 +21,7 @@ pub struct EvNode{
 		- Corresponding to the is_read_from_fulfilled vector.
 	 */
 	pub read_from: Vec<ShouldSyncCell<Option<Weak<EvNode>>>>,       
+
 	/*
 		read_by is the set of evNode who use the result of this EvNode. Comes from:
 		1. Tpg construction. 
@@ -34,15 +35,15 @@ pub struct EvNode{
 	pub status: AtomicCell<EventStatus>,
 	
 	// A vector is used to solve the multi-thread visiting.
-	pub is_read_from_fulfilled: Vec<AtomicCell<bool>>,
+	is_read_from_fulfilled: Vec<AtomicCell<bool>>,
 
 	// States to read.
 	pub reads: Vec<String>,
 	pub write: String,
 	pub has_write: bool,
 
-	// For debugging.
-	has_storage_slot: ShouldSyncCell<bool>,
+	// Double sync for state writing.
+	has_storage_slot: AtomicCell<bool>,
 
 	// Router to execute function.
 	pub idx: i32,
@@ -91,7 +92,7 @@ impl EvNode {
 
 				idx,
 				has_write: event.has_write,
-				has_storage_slot: ShouldSyncCell::new(false),
+				has_storage_slot: AtomicCell::new(false),
 			})
 		}
 	}
@@ -129,23 +130,49 @@ impl EvNode {
 		) // For now, let param_count as the same as query.
 	}
 
-	pub fn accept(&self) {
+	pub fn notify_txn_accept(&self) {
 		/*
 			This function is just single threaded:
 			- Only one thread calling for one EvNode each time.
 		 */
-		debug_assert!(self.status.load() == EventStatus::CLAIMED);
-		self.status.store(EventStatus::ACCEPTED);
-
 		// Inform event accepted.
-		self.txn.upgrade().unwrap().event_accepted();
-		// Trigger txn commit handler.
-		self.txn.upgrade().unwrap().try_commit();
+		if self.txn.upgrade().unwrap().event_accepted_no_unfinished() {
+			// Trigger txn commit handler.
+			self.txn.upgrade().unwrap().try_commit();
+		}
 
 	}
 
+	// Operate on dependency.
+	pub fn set_fulfilled_by_key(&self, key: &str) -> bool {
+		let idx = self.reads.iter().position(|r| r.as_str() == key).unwrap();
+		self.is_read_from_fulfilled[idx].swap(true)
+	}
+
+	// Operate on dependency. Init. This should be used when iterating the read_from link.
+	pub fn set_fulfilled_by_idx(&self, idx: usize, target: bool) -> bool {
+		self.is_read_from_fulfilled[idx].swap(true)
+	}
+
+	// Operate on dependency.
+	pub fn set_unfulfilled_by_key(&self, key: &str) -> bool {
+		let idx = self.reads.iter().position(|r| r.as_str() == key).unwrap();
+		self.is_read_from_fulfilled[idx].swap(false)
+	}
+
+	// reset resets the related state modification to original. 
+	// Only apply to those event node that aborted or whose parents aborted after being accept.
+	pub fn reset_accept(&self){
+		debug_assert!(self.status.load() == EventStatus::ACCEPTED);
+		self.status.store(EventStatus::WAITING);
+		// Revert txn count.
+		self.txn.upgrade().unwrap().reset_fulfilled_event();
+		simpledb::DB.get().unwrap()
+			.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
+	}
+
 	pub fn write_back<T: Database>(&self, value: &Vec<u8>, db: &T) {
-		if *self.has_storage_slot.read() {
+		if self.has_storage_slot.swap(true) {
 			db.write_version(
 				"default", 
 				self.write.as_str(), 
@@ -159,8 +186,6 @@ impl EvNode {
 				self.txn.upgrade().unwrap().ts, 
 				value,
 			);
-			let mut w = self.has_storage_slot.write();
-			*w = true;
 		}
 	}
 
@@ -183,7 +208,9 @@ impl EvNode {
 	}
 
 	pub fn get_next_option_push_others_ready(&self, pipe: &Sender<Arc<EvNode>>) -> Option<Arc<EvNode>> {
-		debug_assert!(self.status.load() == EventStatus::ACCEPTED);
+		debug_assert!(self.status.load() == EventStatus::ACCEPTED
+			|| self.status.load() == EventStatus::ABORTED	 // Being aborted after writing back. Just select and enqueue the next ones.
+		);
 
 		// Traverse sons to inform acceptance, and return the next node.
 		let next_candidates: Vec<Arc<EvNode>> = (*self.read_by.read().unwrap())
@@ -236,8 +263,13 @@ impl EvNode {
 		- CLAIMED evnode and WAITING transaction.
 	 */
 	pub fn notify_txn_abort(&self){
-		debug_assert!(self.status.load() == EventStatus::CLAIMED 
-			&& self.txn.upgrade().unwrap().status.load() == TxnStatus::WAITING);
+		debug_assert!(
+			(self.status.load() == EventStatus::CLAIMED 
+		 	|| self.status.load() == EventStatus::ABORTED) // Abort during execution.
+		);
+		debug_assert!(
+			self.txn.upgrade().unwrap().status.load() != TxnStatus::COMMITED
+		);
 		// Trigger txn abortion.
 		self.txn.upgrade().unwrap().abort();
 		// self.abort(); // Txn abortion includes self abortion.
@@ -266,6 +298,10 @@ impl EvNode {
 	pub	fn abort(&self) {
 		debug_assert!( self.status.load() != EventStatus::CONSTRUCT ); // A node can be aborted anytime but not construct. The whole txn is not ready to work.
 		debug_assert!( self.txn.upgrade().unwrap().status.load() == TxnStatus::ABORTED );
+		// Has been aborted by others.
+		if self.status.load() == EventStatus::ABORTED {
+			return
+		}
 		self.status.store(EventStatus::ABORTED);
 		// TODO. Preallocate the vector.
 		let mut stack: Vec<Arc<EvNode>> = Vec::with_capacity(20);
@@ -273,44 +309,50 @@ impl EvNode {
 		stack.push(self.txn.upgrade().unwrap().ev_nodes.read()[self.idx as usize].clone());
 		while stack.len() != 0 {
 			let parent = stack.pop().unwrap();
-			for (idx, son) in parent.read_by.read().unwrap().iter().enumerate(){
+			for son in parent.read_by.read().unwrap().iter(){
 				let node = son.as_ref().unwrap().upgrade().unwrap(); // Son could not be none.
 				match node.status.load() {
 					EventStatus::ACCEPTED => {
+						node.reset_accept();
+						let origin_fullfilled = node.set_unfulfilled_by_key(&parent.write);
+						debug_assert!(origin_fullfilled); // Orginally must be true. Set false now.
 						// State shift has been made. Recover the state shift and dive in.
-						node.status.store(EventStatus::WAITING);
-						let origin = node.is_read_from_fulfilled[idx].swap(false);
-						debug_assert!(origin); // Orginally must be true. Set false now.
-						simpledb::DB.get().unwrap()
-							.reset_version("default", &self.write, self.txn.upgrade().unwrap().ts);
 						// Reset later dependent nodes.
 						stack.push(node); // It could produce wrong result to be used by sons.
 					}
-					EventStatus::ABORTED => continue, // Ends here. Has been operated by other abortion thread.
+					EventStatus::ABORTED => {}, // Ends here. Has been operated by other abortion thread.
 					EventStatus::CLAIMED => {
+						node.status.store(EventStatus::WAITING);
 						println!("Event Abortion: Rare condition. A claimed node needs to be reset.");
-						// Busy wait till that thread release Event. 
-						while node.status.load() != EventStatus::CLAIMED {}
+						// Busy wait till that thread release Event.
+						// while node.status.load() != EventStatus::CLAIMED {}
+						let origin_fullfilled = node.set_unfulfilled_by_key(&parent.write);
+						debug_assert!(origin_fullfilled == false); // Orginally must be false.
 					},
 					EventStatus::WAITING => {
 						// No state shift happened. No change.
-						debug_assert!(node.is_read_from_fulfilled[idx].load() == false); // Not executed yet.
-						continue;
+						let origin_fullfilled = node.set_unfulfilled_by_key(&parent.write);
+						debug_assert!(origin_fullfilled == false); // Not executed yet. ?? Confused...
 					},
 					EventStatus::INQUEUE => {
-						node.status.store(EventStatus::WAITING); // Just set waiting.
-						let origin = node.is_read_from_fulfilled[idx].swap(false);
-						debug_assert!(origin); // Orginally must be true. Set false now.
+						node.status.store(EventStatus::WAITING); // Just set waiting. Invalidate the following.
+						let origin_fullfilled = node.set_unfulfilled_by_key(&parent.write);
+						debug_assert!(origin_fullfilled == false);
 						// Nothing to push. It's not done yet.
 					}
 					EventStatus::CONSTRUCT => panic!("bug."),
 				}
 			}
 		};
-		// Copy last state result only happens for aborted nodes. For those redo ones, just set empty.
+		// Copy last state result only happens for aborted nodes. For those redo ones, just set empty with reset api.
 		if self.has_write{
 			simpledb::DB.get().unwrap()
-				.copy_last_version("default", &self.write, self.txn.upgrade().unwrap().ts); 
+				.copy_last_version(
+					"default", 
+					&self.write, 
+					self.txn.upgrade().unwrap().ts, 
+					self.has_storage_slot.swap(true), // Get a new slot if not have.
+				); 
 		}
 	}
 

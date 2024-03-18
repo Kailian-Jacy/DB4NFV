@@ -26,6 +26,8 @@ pub struct Config {
     pub transaction_pooling_size: usize,
     // Max state record size.
     pub max_state_records: usize,
+    // Max event batch size. Used when worker thread fetch unfinished events.
+    pub max_event_batch: usize,
     // Verbose output.
     pub verbose: bool,
     // If enable monitor thread.
@@ -51,7 +53,8 @@ impl Default for Config {
             transaction_pooling_size: 10000,
             verbose: true,
             monitor_enabled: true,
-            log_dir: String::from("."),
+            max_event_batch: 10,
+            log_dir: String::from("./perf"),
         }
     }
 }

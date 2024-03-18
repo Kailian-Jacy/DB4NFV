@@ -33,8 +33,8 @@ impl api::Database for SimpleDB {
 		self.tables[table].push_version(key, ts, value);	
     }
 
-	fn copy_last_version(&self, table: &str, key: &str, ts: u64) {
-		self.tables[table].copy_last_version(key, ts);	
+	fn copy_last_version(&self, table: &str, key: &str, ts: u64, has_slot: bool) {
+		self.tables[table].copy_last_version(key, ts, has_slot);	
     }
 
 	fn release_version(&self, table: &str, key: &str, ts: u64) {
@@ -118,34 +118,41 @@ impl Table {
 		1. ACCEPTED evnode. In the same transaction as abortion evnode.
 		2. WAITING evnode. 
 	 */
-	fn copy_last_version(&self, key: &str, ts: u64){
+	fn copy_last_version(&self, key: &str, ts: u64, has_slot: bool){
 	// This only called on obj to be aborted. Should have been written NORMAL result.
 		debug_assert!(self.states.contains_key(key));
+		let r = &self.records[self.states[key]];
 		// Find position of the current.
-		let (idx, new);
-		let try_find_op = self.records[self.states[key]]
-			.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
-		if try_find_op.is_none() {
-			self.push_version(key, ts, &Vec::<u8>::new());
-			(idx, new) = self.records[self.states[key]]
-				.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)))
-				.expect("Just inserted such key. bug.");
+		if !has_slot {
+			// Search back.
+			let to_copy_op = r.search_back( Box::new(
+					|t| {t.state == DataPointState::NORMAL}
+				), r.len());
+			let value = if to_copy_op.is_none() {
+				// Dated back to 0. Use default value.
+					vec![0]
+				} else {
+					to_copy_op.unwrap().read().unwrap().value.clone()
+				};
+			self.push_version(
+				key, ts, &value
+			);
 		} else {
-			(idx, new) = try_find_op.unwrap()
+			let (idx, new) = self.records[self.states[key]]
+				.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts))).unwrap();
+			let to_copy_op = r.search_back( Box::new(
+					|t| {t.state == DataPointState::NORMAL}
+				), idx);
+			let value = if to_copy_op.is_none() {
+				// Dated back to 0. Use default value.
+					vec![0]
+				} else {
+					to_copy_op.unwrap().read().unwrap().value.clone()
+				};
+			let mut new_w = new.write().unwrap();
+			new_w.value = value;
+			new_w.state = DataPointState::NORMAL;
 		}
-		// Search back.
-		let to_copy_op = self.records[self.states[key]]
-			.search_back( Box::new(
-				|t| {t.state == DataPointState::NORMAL}
-			), idx);
-		let value = if to_copy_op.is_none() {
-			// Dated back to 0. Use default value.
-				vec![0]
-			} else {
-				to_copy_op.unwrap().read().unwrap().value.clone()
-			};
-		let mut new_w = new.write().unwrap();
-		new_w.value = value;
 		// WARNING: TODO Abortion deprecated here.
 	}
 	
@@ -158,6 +165,7 @@ impl Table {
 				.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
 			obj.is_none()
 		});
+		debug_assert!(value.len() != 0);
 		debug_assert!({ // Make sure is increasing order.
 			let t = &self.records[self.states[key]];
 			let n = t.peek(t.len());
@@ -178,6 +186,7 @@ impl Table {
 		debug_assert!(self.states.contains_key(key));
 		let obj_ref = self.records[self.states[key]]
 			.ref_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
+		debug_assert!(value.len() != 0);
 		debug_assert!({
 			obj_ref.unwrap().1
 				.read().unwrap()
@@ -185,7 +194,6 @@ impl Table {
 		});
 		obj_ref.unwrap().1.write().unwrap().state = DataPointState::NORMAL;
 		obj_ref.unwrap().1.write().unwrap().value = value.clone();
-		// TODO: Search back.
 	}
 
 	fn release_version(&self, key: &str, ts: u64){
@@ -207,11 +215,17 @@ impl Table {
 		debug_assert!(self.states.contains_key(key));
 		let obj_op = self.records[self.states[key]]
 			.object_as_ordered(Box::new(move |dp: &DataPoint<Vec<u8>>| dp.ts.cmp(&ts)));
-		if obj_op.is_none(){
-			self.records[self.states[key]].dump();
-			assert!(false);   // Shoud not be none.
-		}
+		debug_assert!({
+			if obj_op.is_none(){
+				self.records[self.states[key]].dump();
+				false
+			} else {
+				true
+			}
+		});
 		debug_assert!(obj_op.as_ref().unwrap().state == DataPointState::NORMAL);
+		// Remove Later. Now we consider get visited the wrong place where initiated value used. Consider to add states to debug.
+		debug_assert!(obj_op.as_ref().unwrap().value.len() != 0);
 		obj_op.unwrap().value.clone()
 	}
 }

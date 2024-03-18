@@ -12,7 +12,8 @@ use std::sync::mpsc::TryRecvError;
 
 use crate::config::CONFIG;
 
-pub static GRACEFUL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+// TODO. Use channel to sync shutdown.
+pub static mut GRACEFUL_SHUTDOWN: bool = false;
 
 // This worker thread constructs TPG streamingly.
 // TODO. Slab memory allocation to reduce the allocation time.
@@ -28,7 +29,7 @@ pub fn construct_thread(_: i16){
 
 	// TODO. Graceful shutdown.
 	loop { // Outer loop. For each valid transaction.
-		if GRACEFUL_SHUTDOWN.load(Ordering::SeqCst) == true{
+		if unsafe { GRACEFUL_SHUTDOWN } == true{
 			println!("Construct thread shutdown. ");
 			break
 		}
@@ -114,9 +115,10 @@ pub fn construct_thread(_: i16){
 
 			ev_node.read_from.iter().enumerate().for_each(|(idx, last)|{
 				if last.read().is_none() {
-					ev_node.is_read_from_fulfilled[idx].store(true);
+					ev_node.set_fulfilled_by_idx(idx, true);
 				} else {
-					ev_node.is_read_from_fulfilled[idx].store(
+					ev_node.set_fulfilled_by_idx(
+						idx, 
 						last.read().as_ref().unwrap().upgrade().unwrap().status.load() == EventStatus::ACCEPTED
 					);
 				}

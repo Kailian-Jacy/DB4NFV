@@ -5,7 +5,7 @@ use crossbeam::atomic::AtomicCell;
 
 use crate::database::api::Database;
 use crate::database::simpledb;
-use crate::ds::transactions::TXN_TEMPLATES;
+use crate::ds::transactions::{Txn, TXN_TEMPLATES};
 use crate::external::ffi::{self, TxnMessage};
 use crate::tpg::ev_node::{EvNode, EventStatus};
 use crate::utils::ShouldSyncCell;
@@ -220,10 +220,12 @@ impl TxnNode{
 	}
 
 	// Safe function. Only happens to WAITING txn.
-	pub fn event_accepted(&self) {
+	pub fn event_accepted_no_unfinished(&self) -> bool {
 		debug_assert!(self.status.load() == TxnStatus::WAITING);
 		debug_assert!(self.unfinished_events.load() > 0);
-		self.unfinished_events.fetch_sub(1);
+		let ret = self.unfinished_events.load() == 1;
+		self.unfinished_events.fetch_sub(1); // Dec by 1.
+		ret
 	}
 
 	// Add_covered_by adds txn that writes the same key as constraint.
@@ -234,6 +236,12 @@ impl TxnNode{
 		});
 		self.covered_by.write().unwrap()
 			.insert(key.clone(), Some(son.clone()));
+	}
+
+	// Only triggered when dependent operation being recovered. 
+	pub fn reset_fulfilled_event(&self) {
+		debug_assert!(self.status.load() == TxnStatus::WAITING);
+		self.unfinished_events.fetch_add(1);
 	}
 
 	// Add_read_by adds txn that reads my result.
@@ -284,7 +292,7 @@ impl TxnNode{
 		 */
 		debug_assert!(
 			self.status.load() == TxnStatus::WAITING
-			|| self.status.load() == TxnStatus::ABORTED
+			|| self.status.load() == TxnStatus::ABORTED 
 		);
 		// match self.status.load() {
 		// 	TxnStatus::WAITING => {},
@@ -348,12 +356,17 @@ impl TxnNode{
 			2. Set self status to be abortion. 
 			3. Try to commit.
 		 */
-		debug_assert!(self.status.load() == TxnStatus::WAITING);
-		self.status.store(TxnStatus::ABORTED);
+		// TODO. We may remove this judgement if the following operation is redoable.
+		match self.status.compare_exchange(TxnStatus::WAITING, TxnStatus::ABORTED){
+			Ok(_) => {}
+			Err(original) => {
+				debug_assert!(original == TxnStatus::ABORTED);
+				return; // Another operator in this txn has set it to be aborted.
+			}
+		}
 		self.ev_nodes
 			.read().iter().for_each(
-				|e| 
-				if e.status.load() != EventStatus::ABORTED { e.abort() }
+				|e| e.abort()
 			);
 		self.unfinished_events.store(0);
 		// Abortion txn also commits. Since the later transactions dates back to check if commitable.

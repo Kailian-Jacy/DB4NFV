@@ -7,7 +7,7 @@ pub trait Database {
 	fn reset_version(&self, table: &str, key: &str, ts: u64); // Debug api. Could just remove.
 	fn write_version(&self, table: &str, key: &str, ts: u64, value: &Vec<u8>); // At certain version.
 	fn push_version(&self, table: &str, key: &str, ts: u64, value: &Vec<u8>); // Be sure to insert at certain result.
-	fn copy_last_version(&self, table: &str, key: &str, ts: u64);
+	fn copy_last_version(&self, table: &str, key: &str, ts: u64, has_slot: bool);
 	fn release_version(&self, table: &str, key: &str, ts: u64);
 
 	// Reading.

@@ -130,7 +130,7 @@ pub fn monitor_thread(tid: usize){
 
 	// Collect data and write to log file every 1 second.
     loop {
-        if GRACEFUL_SHUTDOWN.load(Ordering::SeqCst) {
+        if unsafe { GRACEFUL_SHUTDOWN } {
             println!("Monitor thread shutdown. ");
             break;
         }
