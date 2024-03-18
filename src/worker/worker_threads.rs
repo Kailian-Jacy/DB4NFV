@@ -4,6 +4,8 @@ use std::sync::{atomic::Ordering, Arc};
 // These worker threads traverse through TPG and execute the operations.
 // TODO. db shall be used as shared.
 pub fn execute_thread(tid: usize){
+	utils::report_cpu_core(format!("Executor {}", tid).as_str());
+
 	let mut evn_option_next : Option<Arc<EvNode>> = None; 
 	let mut evn_option : Option<Arc<EvNode>>; // Option: if we have migrated from related one, we don't need to fetch from queue.
 	loop {

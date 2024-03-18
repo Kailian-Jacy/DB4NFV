@@ -1,4 +1,7 @@
-use std::{sync::{RwLock, RwLockReadGuard, RwLockWriteGuard}, time::{SystemTime, UNIX_EPOCH}};
+use std::{sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard}, time::{SystemTime, UNIX_EPOCH}};
+use lazy_static::lazy_static;
+
+use core_affinity::CoreId;
 
 
 // Some data structure in our system guarantees thread safety by itself. Mark it to be "Will be no conflict" and detect bug.
@@ -39,14 +42,25 @@ pub fn ns_to_system_time(nanoseconds: u64) -> SystemTime {
     UNIX_EPOCH + duration
 }
 
-pub fn bind_to_cpu_core(){
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    let res = core_affinity::set_for_current(
-        core_ids[0]
-    );
+lazy_static! {
+    static ref AVAILABLE_CPUS: Vec<CoreId> = {
+        core_affinity::get_core_ids()
+            .expect("Failed to get core IDs")
+    };
+}
+
+pub fn bind_to_cpu_core(tid: usize){
+    let to_bind = AVAILABLE_CPUS[tid];
+    let res = core_affinity::set_for_current(to_bind);
     if !res {
         panic!("Bingding failed.")
     }
+}
+
+pub fn report_cpu_core(name: &str){
+    // Retrieve the current thread id
+    let core_id = affinity::get_thread_affinity().unwrap();
+    println!("Current thread {} is binded to CPU core {:?}", name, core_id);
 }
 
 #[cfg(test)]

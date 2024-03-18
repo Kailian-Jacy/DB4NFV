@@ -38,7 +38,7 @@ fn main() {
     };
 
     config::init(file_path);
-    utils::bind_to_cpu_core();
+    utils::bind_to_cpu_core(0);
     metrics::init();
 
     ffi::init_sfc(0, Vec::new());
@@ -71,7 +71,7 @@ fn main() {
     let guards: Vec<_> = (config::CONFIG.read().unwrap().vnf_threads_num + 1..worker_thread_ends)
         .into_par_iter().map(|tid| {
             thread::spawn(move || {
-                utils::bind_to_cpu_core();
+                utils::bind_to_cpu_core(tid as usize);
                 execute_thread(tid as usize)
             })
     }).collect();
@@ -80,7 +80,7 @@ fn main() {
         Spawn monitor thread. if required.
      */
     let monitor_guards = thread::spawn(move || {
-        utils::bind_to_cpu_core();
+        // utils::bind_to_cpu_core();
         metrics::monitor_thread(worker_thread_ends as usize);
     });
 
